@@ -21,6 +21,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -168,7 +169,7 @@ export function matchValidatorPattern(
  * @returns The content of the first user message, or null if not found
  */
 export async function getFirstUserMessageContent(transcriptPath: string): Promise<string | null> {
-  const expandedPath = transcriptPath.replace(/^~/, process.env.HOME || '');
+  const expandedPath = transcriptPath.replace(/^~/, os.homedir());
 
   if (!fs.existsSync(expandedPath)) {
     return null;
@@ -264,7 +265,7 @@ async function handleHook(input: HookInput): Promise<HookOutput> {
       return { decision: 'approve' };
     }
 
-    const expandedPath = transcriptPath.replace(/^~/, process.env.HOME || '');
+    const expandedPath = transcriptPath.replace(/^~/, os.homedir());
 
     // Use agent_id if provided, otherwise extract from path
     const agentId = input.agent_id || extractAgentIdFromPath(transcriptPath);
@@ -329,20 +330,28 @@ async function handleHook(input: HookInput): Promise<HookOutput> {
 async function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
+    let resolved = false;
+
+    const done = (value: string): void => {
+      if (resolved) return;
+      resolved = true;
+      resolve(value);
+    };
 
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => {
       data += chunk;
     });
     process.stdin.on('end', () => {
-      resolve(data);
+      done(data || '{}');
+    });
+    process.stdin.on('error', () => {
+      done('{}');
     });
 
     // Handle case where stdin is empty or closed (e.g., piped empty input)
     setTimeout(() => {
-      if (!data) {
-        resolve('{}');
-      }
+      done(data || '{}');
     }, STDIN_READ_TIMEOUT_MS);
   });
 }

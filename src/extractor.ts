@@ -138,8 +138,8 @@ export async function extractMetricsFromFile(
       }
 
       // Count tool uses from assistant messages
-      if (message.type === 'assistant' && message.message?.content) {
-        const content = message.message.content as ContentBlock[];
+      if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
+        const content = message.message.content;
         for (const block of content) {
           if (isToolUseBlock(block)) {
             toolUseCount++;

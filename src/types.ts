@@ -153,8 +153,8 @@ export type ContentBlock = ToolUseBlock | TextBlock | ThinkingBlock | { type: st
 /**
  * Type predicate for ToolUseBlock
  */
-export function isToolUseBlock(block: ContentBlock | null | undefined): block is ToolUseBlock {
-  return block != null && typeof block === 'object' && block.type === 'tool_use';
+export function isToolUseBlock(block: unknown): block is ToolUseBlock {
+  return block != null && typeof block === 'object' && (block as Record<string, unknown>).type === 'tool_use';
 }
 
 /**

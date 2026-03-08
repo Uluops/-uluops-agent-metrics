@@ -111,8 +111,8 @@ function rotateIfNeeded(): void {
 
     // Rotate current to .1
     fs.renameSync(currentConfig.logPath, `${currentConfig.logPath}.1`);
-  } catch {
-    // Ignore rotation errors
+  } catch (err) {
+    process.stderr.write(`Warning: Log rotation failed: ${err instanceof Error ? err.message : 'unknown error'}\n`);
   }
 }
 

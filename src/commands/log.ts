@@ -79,16 +79,22 @@ export function registerLogCommands(program: Command): void {
           try {
             const currentSize = fs.statSync(config.logPath).size;
             if (currentSize > lastSize) {
-              const content = fs.readFileSync(config.logPath, 'utf-8');
-              const allLines = content.split('\n');
-              const newLines = allLines.slice(-Math.max(1, allLines.length - Math.floor(lastSize / 100)));
-              newLines.forEach((line) => {
+              // Read only the new bytes appended since last check
+              const fd = fs.openSync(config.logPath, 'r');
+              const newBytes = Buffer.alloc(currentSize - lastSize);
+              fs.readSync(fd, newBytes, 0, newBytes.length, lastSize);
+              fs.closeSync(fd);
+              const newContent = newBytes.toString('utf-8');
+              newContent.split('\n').forEach((line) => {
                 if (line.trim()) console.log(line);
               });
               lastSize = currentSize;
             }
-          } catch {
-            // File might not exist
+          } catch (err) {
+            // File might not exist yet or was rotated
+            if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+              lastSize = 0; // Reset on file deletion/rotation
+            }
           }
         }, 500);
 

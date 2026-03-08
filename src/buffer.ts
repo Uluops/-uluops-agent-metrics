@@ -427,17 +427,26 @@ export function getAllForSession(
  * @returns Number of entries removed
  */
 export function cleanupExpired(config: BufferConfig = DEFAULT_CONFIG): number {
-  const allEntries = readBuffer(config);
-  const now = new Date();
-  const validEntries = allEntries.filter((entry) => new Date(entry.expires_at) > now);
-  const removedCount = allEntries.length - validEntries.length;
+  const lockPath = config.bufferPath + '.lock';
+  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
 
-  if (removedCount > 0) {
-    // Rewrite buffer with only valid entries
-    fs.writeFileSync(config.bufferPath, toJsonlContent(validEntries), 'utf-8');
+  try {
+    const allEntries = readBuffer(config);
+    const now = new Date();
+    const validEntries = allEntries.filter((entry) => new Date(entry.expires_at) > now);
+    const removedCount = allEntries.length - validEntries.length;
+
+    if (removedCount > 0) {
+      // Rewrite buffer with only valid entries
+      fs.writeFileSync(config.bufferPath, toJsonlContent(validEntries), 'utf-8');
+    }
+
+    return removedCount;
+  } finally {
+    if (lockAcquired) {
+      releaseLock(lockPath);
+    }
   }
-
-  return removedCount;
 }
 
 /**
@@ -451,15 +460,24 @@ export function clearSession(
   sessionId: string,
   config: BufferConfig = DEFAULT_CONFIG
 ): number {
-  const allEntries = readBuffer(config);
-  const remaining = allEntries.filter((e) => e.session_id !== sessionId);
-  const removedCount = allEntries.length - remaining.length;
+  const lockPath = config.bufferPath + '.lock';
+  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
 
-  if (removedCount > 0) {
-    fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
+  try {
+    const allEntries = readBuffer(config);
+    const remaining = allEntries.filter((e) => e.session_id !== sessionId);
+    const removedCount = allEntries.length - remaining.length;
+
+    if (removedCount > 0) {
+      fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
+    }
+
+    return removedCount;
+  } finally {
+    if (lockAcquired) {
+      releaseLock(lockPath);
+    }
   }
-
-  return removedCount;
 }
 
 /**
@@ -473,15 +491,24 @@ export function clearAgents(
   agentIds: string[],
   config: BufferConfig = DEFAULT_CONFIG
 ): number {
-  const allEntries = readBuffer(config);
-  const remaining = allEntries.filter((e) => !agentIds.includes(e.agent_id));
-  const removedCount = allEntries.length - remaining.length;
+  const lockPath = config.bufferPath + '.lock';
+  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
 
-  if (removedCount > 0) {
-    fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
+  try {
+    const allEntries = readBuffer(config);
+    const remaining = allEntries.filter((e) => !agentIds.includes(e.agent_id));
+    const removedCount = allEntries.length - remaining.length;
+
+    if (removedCount > 0) {
+      fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
+    }
+
+    return removedCount;
+  } finally {
+    if (lockAcquired) {
+      releaseLock(lockPath);
+    }
   }
-
-  return removedCount;
 }
 
 /**
