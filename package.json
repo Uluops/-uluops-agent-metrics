@@ -1,0 +1,44 @@
+{
+  "name": "@uluops/agent-metrics",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Extract accurate metrics from Claude Code agent session files",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agent-metrics": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "node --test 'dist/*.test.js' 'dist/**/*.test.js'",
+    "test:coverage": "node --test --experimental-test-coverage 'dist/*.test.js' 'dist/**/*.test.js'",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "metrics",
+    "tokens",
+    "validation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

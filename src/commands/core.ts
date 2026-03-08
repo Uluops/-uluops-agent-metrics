@@ -1,0 +1,158 @@
+/**
+ * Core Commands
+ *
+ * Main extraction commands: extract, list, find, compare
+ */
+
+import { Command } from 'commander';
+import * as path from 'node:path';
+import {
+  extractAgentMetrics,
+  extractMetricsFromFile,
+  formatMetricsSummary,
+  toTrackerFormat,
+} from '../extractor.js';
+import {
+  findAgentFile,
+  findRecentAgentFiles,
+  extractAgentIdFromFilename,
+  getProjectName,
+} from '../utils.js';
+import { queryBuffer } from '../buffer.js';
+import {
+  formatAgentList,
+  formatAgentListError,
+  formatAgentCompare,
+  type AgentListItem,
+  type CompareItem,
+} from '../display/formatters.js';
+import type { ExtractFormat } from '../types.js';
+
+/**
+ * Register core commands on the program.
+ */
+export function registerCoreCommands(program: Command): void {
+  // Extract command
+  program
+    .command('extract <agent-id>')
+    .description('Extract metrics for a specific agent ID')
+    .option('-p, --project <path>', 'Project path to search in')
+    .option('-f, --format <format>', 'Output format: json, summary, tracker', 'json')
+    .option('-v, --validator <name>', 'Validator name for tracker format')
+    .action(async (agentId: string, options: { project?: string; format: ExtractFormat; validator?: string }) => {
+      try {
+        const metrics = await extractAgentMetrics(agentId, {
+          projectPath: options.project,
+        });
+
+        if (!metrics) {
+          console.error(`Agent file not found for ID: ${agentId}`);
+          process.exit(1);
+        }
+
+        switch (options.format) {
+          case 'summary':
+            console.log(formatMetricsSummary(metrics));
+            break;
+          case 'tracker':
+            // Auto-lookup validator name from buffer if not provided
+            let validatorName = options.validator;
+            if (!validatorName) {
+              const bufferEntries = queryBuffer({ agentId });
+              const bufferEntry = bufferEntries.find(e => e.agent_id === agentId);
+              validatorName = bufferEntry?.validator_name || 'unknown-validator';
+            }
+            console.log(JSON.stringify(toTrackerFormat(metrics, validatorName), null, 2));
+            break;
+          case 'json':
+          default:
+            console.log(JSON.stringify(metrics, null, 2));
+            break;
+        }
+      } catch (error) {
+        console.error('Error extracting metrics:', error instanceof Error ? error.message : error);
+        process.exit(1);
+      }
+    });
+
+  // List command
+  program
+    .command('list')
+    .description('List recent agent runs')
+    .option('-n, --limit <number>', 'Number of agents to list', '10')
+    .option('-p, --project <path>', 'Filter by project path')
+    .action(async (options: { limit: string; project?: string }) => {
+      try {
+        const limit = parseInt(options.limit, 10);
+        const recentFiles = await findRecentAgentFiles(limit);
+
+        const items: AgentListItem[] = [];
+        const errors: string[] = [];
+
+        for (const { filePath, projectDir } of recentFiles) {
+          const filename = path.basename(filePath);
+          const agentId = extractAgentIdFromFilename(filename);
+          const projectName = getProjectName(projectDir);
+
+          if (!agentId) continue;
+
+          try {
+            const metrics = await extractMetricsFromFile(filePath);
+            items.push({ agentId, metrics, projectName });
+          } catch {
+            errors.push(formatAgentListError(agentId, projectName));
+          }
+        }
+
+        // Output formatted list
+        console.log(formatAgentList(items));
+
+        // Append any errors
+        for (const error of errors) {
+          console.log(error);
+        }
+      } catch (error) {
+        console.error('Error listing agents:', error instanceof Error ? error.message : error);
+        process.exit(1);
+      }
+    });
+
+  // Find command
+  program
+    .command('find <agent-id>')
+    .description('Find the location of an agent file')
+    .option('-p, --project <path>', 'Project path to search in')
+    .action((agentId: string, options: { project?: string }) => {
+      const location = findAgentFile(agentId, options.project);
+
+      if (!location) {
+        console.error(`Agent file not found for ID: ${agentId}`);
+        process.exit(1);
+      }
+
+      console.log(JSON.stringify(location, null, 2));
+    });
+
+  // Compare command (useful for workflow runs with multiple validators)
+  program
+    .command('compare <agent-ids...>')
+    .description('Compare metrics across multiple agent runs')
+    .option('-p, --project <path>', 'Project path to search in')
+    .action(async (agentIds: string[], options: { project?: string }) => {
+      try {
+        const items: CompareItem[] = [];
+
+        for (const agentId of agentIds) {
+          const metrics = await extractAgentMetrics(agentId, {
+            projectPath: options.project,
+          });
+          items.push({ agentId, metrics });
+        }
+
+        console.log(formatAgentCompare(items));
+      } catch (error) {
+        console.error('Error comparing agents:', error instanceof Error ? error.message : error);
+        process.exit(1);
+      }
+    });
+}
