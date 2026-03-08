@@ -95,7 +95,7 @@ function toJsonlContent(entries: BufferEntry[]): string {
  */
 function isValidBufferEntry(obj: unknown): obj is BufferEntry {
   if (!obj || typeof obj !== 'object') return false;
-  const entry = obj as Record<string, unknown>;
+  const entry = obj as Record<string, unknown>; // safe: guarded by typeof check above
 
   // Check required string fields
   if (typeof entry.agent_id !== 'string') return false;
@@ -253,7 +253,7 @@ export function appendToBuffer(
   const lockAcquired = acquireLock(lockPath, lockTimeoutMs);
 
   if (!lockAcquired) {
-    console.error(`Warning: Could not acquire lock for ${config.bufferPath}, proceeding without lock`);
+    process.stderr.write(`Warning: Could not acquire lock for ${config.bufferPath}, proceeding without lock\n`);
   }
 
   try {
@@ -311,11 +311,11 @@ export function readBuffer(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[]
       if (isValidBufferEntry(parsed)) {
         entries.push(parsed);
       } else {
-        console.error('Warning: Skipping buffer entry with missing required fields');
+        process.stderr.write('Warning: Skipping buffer entry with missing required fields\n');
       }
     } catch (err) {
       // Log malformed lines so users have visibility into data issues
-      console.error(`Warning: Skipping malformed buffer entry: ${err instanceof Error ? err.message : 'parse error'}`);
+      process.stderr.write(`Warning: Skipping malformed buffer entry: ${err instanceof Error ? err.message : 'parse error'}\n`);
     }
   }
 

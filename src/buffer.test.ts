@@ -368,14 +368,15 @@ describe('Buffer Module', () => {
       const lockPath = TEST_CONFIG_FAST_LOCK.bufferPath + '.lock';
       fs.writeFileSync(lockPath, String(process.pid));
 
-      // Capture console.error output
-      const originalError = console.error;
+      // Capture stderr output
+      const originalWrite = process.stderr.write;
       let warningLogged = false;
-      console.error = (msg: string) => {
-        if (msg.includes('Warning') && msg.includes('lock')) {
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        if (typeof msg === 'string' && msg.includes('Warning') && msg.includes('lock')) {
           warningLogged = true;
         }
-      };
+        return true;
+      }) as typeof process.stderr.write;
 
       try {
         // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing
@@ -387,8 +388,9 @@ describe('Buffer Module', () => {
         // Entry should still be written
         const entries = readBuffer(TEST_CONFIG_FAST_LOCK);
         assert.ok(entries.length >= 1, 'Entry should be written even with lock contention');
+        assert.ok(warningLogged, 'Should log a warning about lock acquisition failure');
       } finally {
-        console.error = originalError;
+        process.stderr.write = originalWrite;
         try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
       }
     });
@@ -425,12 +427,13 @@ describe('Buffer Module', () => {
       const recentTime = new Date(Date.now() - 29000);
       fs.utimesSync(lockPath, recentTime, recentTime);
 
-      // Capture console output
-      const originalError = console.error;
+      // Capture stderr output
+      const originalWrite = process.stderr.write;
       let warningLogged = false;
-      console.error = (msg: string) => {
-        if (msg.includes('Warning')) warningLogged = true;
-      };
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        if (typeof msg === 'string' && msg.includes('Warning')) warningLogged = true;
+        return true;
+      }) as typeof process.stderr.write;
 
       try {
         // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing
@@ -441,10 +444,121 @@ describe('Buffer Module', () => {
         // Entry should still be written
         const entries = readBuffer(TEST_CONFIG_FAST_LOCK);
         assert.ok(entries.length >= 1, 'Entry should be written');
+        assert.ok(warningLogged, 'Should warn about lock acquisition failure');
       } finally {
-        console.error = originalError;
+        process.stderr.write = originalWrite;
         try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
       }
+    });
+  });
+
+  describe('Malformed JSONL Edge Cases', () => {
+    it('should handle partial JSON (truncated mid-object)', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      // Append truncated JSON (e.g., process killed mid-write)
+      fs.appendFileSync(TEST_CONFIG.bufferPath, '{"agent_id":"trunc","session_id":"s1","captured_at":"2026-01\n');
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1, 'Should skip truncated JSON and keep valid entry');
+      assert.strictEqual(entries[0].agent_id, metrics.agent_id);
+    });
+
+    it('should handle lines with only whitespace characters', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      // Append lines with various whitespace
+      fs.appendFileSync(TEST_CONFIG.bufferPath, '   \n\t\t\n  \t \n');
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1, 'Should skip whitespace-only lines');
+    });
+
+    it('should handle valid JSON that is not a buffer entry (array)', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      // Append valid JSON but wrong type (array instead of object)
+      fs.appendFileSync(TEST_CONFIG.bufferPath, '[1, 2, 3]\n');
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1, 'Should skip non-object JSON');
+    });
+
+    it('should handle valid JSON with null value', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      fs.appendFileSync(TEST_CONFIG.bufferPath, 'null\n');
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1, 'Should skip null JSON');
+    });
+
+    it('should handle empty string between valid entries', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'before-empty' }), { config: TEST_CONFIG });
+      fs.appendFileSync(TEST_CONFIG.bufferPath, '\n\n\n');
+      appendToBuffer(createTestMetrics({ agent_id: 'after-empty' }), { config: TEST_CONFIG });
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 2);
+      assert.strictEqual(entries[0].agent_id, 'before-empty');
+      assert.strictEqual(entries[1].agent_id, 'after-empty');
+    });
+  });
+
+  describe('Error Boundary Conditions', () => {
+    it('should handle read-only buffer file gracefully on append', () => {
+      // Create buffer file first
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      // Make it read-only
+      fs.chmodSync(TEST_CONFIG.bufferPath, 0o444);
+
+      try {
+        assert.throws(
+          () => appendToBuffer(createTestMetrics(), { config: TEST_CONFIG }),
+          /EACCES|permission denied/i
+        );
+      } finally {
+        // Restore permissions for cleanup
+        fs.chmodSync(TEST_CONFIG.bufferPath, 0o644);
+      }
+    });
+
+    it('should handle non-existent parent directory for buffer stats', () => {
+      const badConfig: BufferConfig = {
+        bufferPath: path.join(TEST_DIR, 'nonexistent', 'deep', 'buffer.jsonl'),
+        defaultTTL: TEST_TTL_MS,
+      };
+
+      const stats = getBufferStats(badConfig);
+      assert.strictEqual(stats.totalEntries, 0);
+      assert.strictEqual(stats.bufferSizeBytes, 0);
+      assert.strictEqual(stats.oldestEntry, null);
+    });
+
+    it('should return 0 for cleanupExpired on non-existent buffer', () => {
+      const badConfig: BufferConfig = {
+        bufferPath: path.join(TEST_DIR, 'no-such-file.jsonl'),
+        defaultTTL: TEST_TTL_MS,
+      };
+
+      const removed = cleanupExpired(badConfig);
+      assert.strictEqual(removed, 0);
+    });
+
+    it('should return 0 for clearSession on non-existent buffer', () => {
+      const badConfig: BufferConfig = {
+        bufferPath: path.join(TEST_DIR, 'no-such-file.jsonl'),
+        defaultTTL: TEST_TTL_MS,
+      };
+
+      const removed = clearSession('any-session', badConfig);
+      assert.strictEqual(removed, 0);
     });
   });
 

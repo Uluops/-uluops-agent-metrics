@@ -13,14 +13,14 @@ Claude Code stores detailed execution data for every agent (Task tool) invocatio
 Install globally to use `agent-metrics` from any directory:
 
 ```bash
-cd tools/agent-metrics
+cd packages/agent-metrics
 ./install.sh
 ```
 
 Or manually:
 
 ```bash
-cd tools/agent-metrics
+cd packages/agent-metrics
 npm install
 npm run build
 npm link
@@ -38,7 +38,7 @@ agent-metrics list
 For project-specific use:
 
 ```bash
-cd tools/agent-metrics
+cd packages/agent-metrics
 npm install
 npm run build
 node dist/index.js list
@@ -205,7 +205,10 @@ Ready for `save_features_list`:
   "model": "claude-sonnet-4-5-20250929",
   "tokens": {
     "input_tokens": 63903,
-    "output_tokens": 1510
+    "output_tokens": 1510,
+    "cache_creation_tokens": 63236,
+    "cache_read_tokens": 315202,
+    "total_effective_tokens": 65413
   },
   "duration_ms": 113126
 }
@@ -220,6 +223,11 @@ Ready for `save_features_list`:
 
 **Note:** Cache reads are excluded from `total_effective` because they're significantly cheaper than other token types.
 
+**Edge cases:**
+- When `cache_creation` is 0 (no new context cached), `total_effective` equals `input + output`
+- When `input` is 0 (all input served from cache), `total_effective` equals `cache_creation + output`
+- For very short agents (single turn), `cache_read` is typically 0 since there's no prior context to read from cache
+
 ## Programmatic Usage
 
 ### Core Extraction Functions
@@ -231,7 +239,7 @@ import {
   extractMultipleAgentMetrics,
   formatMetricsSummary,
   toTrackerFormat,
-} from '@claude-workflows/agent-metrics';
+} from '@uluops/agent-metrics';
 
 // Extract by agent ID (searches all projects)
 const metrics = await extractAgentMetrics('a80e24f');
@@ -269,7 +277,7 @@ import {
   readBuffer,
   readValidEntries,
   entriesToTrackerFormat,
-} from '@claude-workflows/agent-metrics';
+} from '@uluops/agent-metrics';
 
 // Query buffer with filters
 const entries = queryBuffer({
@@ -315,7 +323,7 @@ import {
   formatNumber,
   formatModelName,
   getProjectName,
-} from '@claude-workflows/agent-metrics';
+} from '@uluops/agent-metrics';
 
 // Find agent file location
 const location = findAgentFile('a80e24f');
@@ -348,7 +356,7 @@ import {
   logError,
   logMetricsCapture,
   logBufferOperation,
-} from '@claude-workflows/agent-metrics';
+} from '@uluops/agent-metrics';
 
 // Configure logger
 configureLogger({
@@ -403,7 +411,7 @@ import type {
   // Logger types
   LogLevel,
   LoggerConfig,
-} from '@claude-workflows/agent-metrics';
+} from '@uluops/agent-metrics';
 ```
 
 ## Data Source
@@ -585,13 +593,13 @@ Output ready for `save_features_list`:
   {
     "name": "code-validator",
     "model": "claude-sonnet-4-5-20250929",
-    "tokens": { "input_tokens": 63903, "output_tokens": 1510 },
+    "tokens": { "input_tokens": 63903, "output_tokens": 1510, "cache_creation_tokens": 63236, "cache_read_tokens": 315202, "total_effective_tokens": 65413 },
     "duration_ms": 113126
   },
   {
     "name": "test-architect",
     "model": "claude-sonnet-4-5-20250929",
-    "tokens": { "input_tokens": 45200, "output_tokens": 980 },
+    "tokens": { "input_tokens": 45200, "output_tokens": 980, "cache_creation_tokens": 44220, "cache_read_tokens": 210000, "total_effective_tokens": 46400 },
     "duration_ms": 87500
   }
 ]
@@ -626,7 +634,7 @@ npm link
 - [x] Global installation via npm link
 - [x] Auto-capture via SubagentStop hook
 - [x] Global buffer with TTL-based expiry
-- [ ] npm publish for `npm install -g @claude-workflows/agent-metrics`
+- [ ] npm publish for `npm install -g @uluops/agent-metrics`
 - [ ] Redis backend for distributed buffer
 - [ ] MCP server integration
 - [ ] Historical trend analysis

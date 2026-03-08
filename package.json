@@ -9,11 +9,11 @@
     "agent-metrics": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "node --test 'dist/*.test.js' 'dist/**/*.test.js'",
-    "test:coverage": "node --test --experimental-test-coverage 'dist/*.test.js' 'dist/**/*.test.js'",
+    "test": "tsc -p tsconfig.test.json && node --test 'dist/*.test.js' 'dist/**/*.test.js'",
+    "test:coverage": "tsc -p tsconfig.test.json && node --test --experimental-test-coverage 'dist/*.test.js' 'dist/**/*.test.js'",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"

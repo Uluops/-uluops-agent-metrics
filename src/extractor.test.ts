@@ -453,9 +453,10 @@ describe('Extractor Module', () => {
 
       const metrics = await extractMetricsFromFile(filePath);
 
-      // Duration should be > 0 since we have multiple messages with different timestamps
-      assert.ok(metrics.duration_ms > 0);
-      assert.ok(metrics.duration_formatted);
+      // 5 messages at 1000ms intervals: duration = (5-1) * 1000 = 4000ms
+      assert.strictEqual(metrics.duration_ms, 4000, 'Duration should be 4000ms for 5 messages at 1s intervals');
+      assert.strictEqual(typeof metrics.duration_formatted, 'string');
+      assert.ok(metrics.duration_formatted.length > 0, 'Formatted duration should not be empty');
     });
 
     it('should handle empty file gracefully', async () => {
@@ -503,6 +504,50 @@ describe('Extractor Module', () => {
       );
     });
 
+    it('should handle truncated JSON mid-value (partial string)', async () => {
+      const filePath = path.join(TEST_DIR, 'truncated-string.jsonl');
+      const validContent = createSampleJSONL();
+      // Append a line that is valid JSON object but truncated mid-string
+      fs.writeFileSync(filePath, validContent + '\n{"agentId":"trun');
+
+      const metrics = await extractMetricsFromFile(filePath);
+      assert.ok(metrics, 'Should still extract valid metrics despite truncated line');
+      assert.strictEqual(metrics.agent_id, 'test-agent-123');
+    });
+
+    it('should handle lines with unicode replacement characters', async () => {
+      const filePath = path.join(TEST_DIR, 'unicode-replacement.jsonl');
+      const validContent = createSampleJSONL();
+      // Append a line with unicode replacement characters
+      fs.writeFileSync(filePath, validContent + '\n{"agent\uFFFD":"bad"}\n');
+
+      const metrics = await extractMetricsFromFile(filePath);
+      assert.ok(metrics, 'Should still extract valid metrics despite unicode-damaged line');
+      assert.strictEqual(metrics.agent_id, 'test-agent-123');
+    });
+
+    it('should handle valid JSON objects missing required fields gracefully', async () => {
+      const filePath = path.join(TEST_DIR, 'missing-fields.jsonl');
+      const validContent = createSampleJSONL();
+      // Append valid JSON but without required agent message fields
+      const invalidLines = [
+        '{"type":"assistant","timestamp":"2026-01-01T00:00:00Z"}', // missing agentId, sessionId, etc
+        '{"agentId":"a","sessionId":"s","type":"user"}', // missing timestamp, slug, etc
+      ].join('\n');
+      fs.writeFileSync(filePath, validContent + '\n' + invalidLines + '\n');
+
+      // Suppress stderr for this test
+      const origWrite = process.stderr.write;
+      process.stderr.write = (() => true) as typeof process.stderr.write;
+      try {
+        const metrics = await extractMetricsFromFile(filePath);
+        assert.ok(metrics, 'Should extract valid metrics and skip invalid entries');
+        assert.strictEqual(metrics.agent_id, 'test-agent-123');
+      } finally {
+        process.stderr.write = origWrite;
+      }
+    });
+
     it('should count message count correctly', async () => {
       const filePath = path.join(TEST_DIR, 'count-test.jsonl');
       fs.writeFileSync(filePath, createSampleJSONL({ messageCount: 10 }));
@@ -521,12 +566,17 @@ describe('Extractor Module', () => {
       const metrics = await extractMetricsFromFile(filePath);
       const summary = formatMetricsSummary(metrics);
 
-      assert.ok(summary.includes('Agent Metrics:'));
-      assert.ok(summary.includes(metrics.agent_id));
-      assert.ok(summary.includes('Tokens'));
-      assert.ok(summary.includes('Execution'));
-      assert.ok(summary.includes('Tool Breakdown'));
-      assert.ok(summary.includes('Read:'));
+      // Verify exact section headers present
+      assert.match(summary, /Agent Metrics: test-agent-123/);
+      assert.match(summary, /┌─ Identification/);
+      assert.match(summary, /┌─ Context/);
+      assert.match(summary, /┌─ Timing/);
+      assert.match(summary, /┌─ Tokens/);
+      assert.match(summary, /┌─ Execution/);
+      assert.match(summary, /┌─ Tool Breakdown/);
+      assert.match(summary, /Read: /);
+      // Verify model appears in context section
+      assert.match(summary, /Model:\s+claude-sonnet-4-5-20250929/);
     });
 
     it('should include all token types', async () => {

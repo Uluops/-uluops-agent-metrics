@@ -7,18 +7,22 @@
  * Registers all command groups and parses arguments.
  */
 
+import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { registerCoreCommands } from './commands/core.js';
 import { registerStatusCommands } from './commands/status.js';
 import { registerBufferCommands } from './commands/buffer.js';
 import { registerLogCommands } from './commands/log.js';
 
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json') as { version: string };
+
 const program = new Command();
 
 program
   .name('agent-metrics')
   .description('Extract accurate metrics from Claude Code agent session files')
-  .version('1.0.0');
+  .version(version);
 
 // Register all command groups
 registerCoreCommands(program);
@@ -92,9 +96,9 @@ CORRELATION WITH TRACKER
   Find validators that ran around a specific tracker run timestamp:
 
     # If tracker shows run at 2026-01-14T05:11:33Z, search window before:
-    $ agent-metrics buffer list \\
-        --end-after 2026-01-14T04:00:00Z \\
-        --end-before 2026-01-14T05:15:00Z \\
+    $ agent-metrics buffer list \
+        --end-after 2026-01-14T04:00:00Z \
+        --end-before 2026-01-14T05:15:00Z \
         --project ops-uluops-mcp
 
   Get tracker-ready format for backfilling token data:
@@ -111,8 +115,8 @@ MAINTENANCE
     $ agent-metrics buffer clear --session <session-id>
 
   View metrics log:
-    $ agent-metrics log show
-    $ agent-metrics log show --limit 50
+    $ agent-metrics log tail
+    $ agent-metrics log tail -n 50
 
 `);
   });

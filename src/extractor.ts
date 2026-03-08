@@ -30,22 +30,25 @@ import {
  * @param obj - The parsed JSON object to validate
  * @returns true if the object has valid RawAgentMessage structure
  */
+function hasStringProperty(obj: Record<string, unknown>, key: string): boolean {
+  return typeof obj[key] === 'string';
+}
+
 function isValidAgentMessage(obj: unknown): obj is RawAgentMessage {
   if (!obj || typeof obj !== 'object') return false;
-  const msg = obj as Record<string, unknown>;
+  const msg = obj as Record<string, unknown>; // safe: guarded by typeof check above
 
   // Required for all messages: timing and identification
-  if (typeof msg.timestamp !== 'string') return false;
-  if (typeof msg.type !== 'string') return false;
+  if (!hasStringProperty(msg, 'timestamp')) return false;
+  if (!hasStringProperty(msg, 'type')) return false;
 
   // Required for first message: session metadata
-  // These are extracted as metrics.agent_id, session_id, etc.
-  if (typeof msg.agentId !== 'string') return false;
-  if (typeof msg.sessionId !== 'string') return false;
-  if (typeof msg.slug !== 'string') return false;
-  if (typeof msg.cwd !== 'string') return false;
-  if (typeof msg.version !== 'string') return false;
-  if (typeof msg.gitBranch !== 'string') return false;
+  if (!hasStringProperty(msg, 'agentId')) return false;
+  if (!hasStringProperty(msg, 'sessionId')) return false;
+  if (!hasStringProperty(msg, 'slug')) return false;
+  if (!hasStringProperty(msg, 'cwd')) return false;
+  if (!hasStringProperty(msg, 'version')) return false;
+  if (!hasStringProperty(msg, 'gitBranch')) return false;
 
   return true;
 }
@@ -108,7 +111,7 @@ export async function extractMetricsFromFile(
     try {
       const parsed = JSON.parse(line);
       if (!isValidAgentMessage(parsed)) {
-        console.error(`Warning: Skipping message with missing required fields in ${filePath}`);
+        process.stderr.write(`Warning: Skipping message with missing required fields in ${filePath}\n`);
         continue;
       }
       const message = parsed; // Now properly validated as RawAgentMessage
@@ -152,7 +155,7 @@ export async function extractMetricsFromFile(
       }
     } catch (err) {
       // Log malformed lines so users have visibility into data issues
-      console.error(`Warning: Skipping malformed JSONL line in ${filePath}: ${err instanceof Error ? err.message : 'parse error'}`);
+      process.stderr.write(`Warning: Skipping malformed JSONL line in ${filePath}: ${err instanceof Error ? err.message : 'parse error'}\n`);
       continue;
     }
   }

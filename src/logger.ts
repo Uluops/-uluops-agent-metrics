@@ -156,7 +156,7 @@ function writeLog(level: LogLevel, message: string, data?: Record<string, unknow
     fs.appendFileSync(currentConfig.logPath, entry, 'utf-8');
   } catch (err) {
     // Log to stderr as fallback
-    console.error(`Failed to write to log file: ${err instanceof Error ? err.message : 'unknown error'}`);
+    process.stderr.write(`Failed to write to log file: ${err instanceof Error ? err.message : 'unknown error'}\n`);
   }
 }
 
