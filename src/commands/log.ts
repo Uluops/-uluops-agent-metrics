@@ -51,7 +51,11 @@ export function registerLogCommands(program: Command): void {
     .option('-n, --lines <count>', 'Number of lines to show', '20')
     .option('-f, --follow', 'Follow log file (like tail -f)')
     .action((options: { lines: string; follow?: boolean }) => {
-      const lines = parseInt(options.lines, 10) || 20;
+      const lines = parseInt(options.lines, 10);
+      if (isNaN(lines) || lines <= 0) {
+        console.error(`Invalid --lines: '${options.lines}'. Expected a positive integer.`);
+        process.exit(1);
+      }
       const config = getLoggerConfig();
 
       if (options.follow) {

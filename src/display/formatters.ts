@@ -284,6 +284,15 @@ export function formatAgentCompare(items: CompareItem[]): string {
     totalErrors += item.metrics.execution.error_count;
   }
 
+  // Summary of found vs not-found
+  const foundCount = items.filter(i => i.metrics).length;
+  const notFoundCount = items.length - foundCount;
+  if (notFoundCount > 0) {
+    lines.push('');
+    lines.push(`  ${foundCount} found, ${notFoundCount} not found`);
+    lines.push('');
+  }
+
   lines.push('─'.repeat(90));
 
   const totalLabel = 'TOTAL'.padEnd(10);

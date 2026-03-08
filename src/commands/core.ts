@@ -4,7 +4,7 @@
  * Main extraction commands: extract, list, find, compare
  */
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import * as path from 'node:path';
 import {
   extractAgentMetrics,
@@ -37,7 +37,7 @@ export function registerCoreCommands(program: Command): void {
     .command('extract <agent-id>')
     .description('Extract metrics for a specific agent ID')
     .option('-p, --project <path>', 'Project path to search in')
-    .option('-f, --format <format>', 'Output format: json, summary, tracker', 'json')
+    .addOption(new Option('-f, --format <format>', 'Output format').choices(['json', 'summary', 'tracker']).default('json'))
     .option('-v, --validator <name>', 'Validator name for tracker format')
     .action(async (agentId: string, options: { project?: string; format: ExtractFormat; validator?: string }) => {
       try {
@@ -65,7 +65,6 @@ export function registerCoreCommands(program: Command): void {
             console.log(JSON.stringify(toTrackerFormat(metrics, validatorName), null, 2));
             break;
           case 'json':
-          default:
             console.log(JSON.stringify(metrics, null, 2));
             break;
         }
@@ -84,6 +83,10 @@ export function registerCoreCommands(program: Command): void {
     .action(async (options: { limit: string; project?: string }) => {
       try {
         const limit = parseInt(options.limit, 10);
+        if (isNaN(limit) || limit <= 0) {
+          console.error(`Invalid --limit: '${options.limit}'. Expected a positive integer.`);
+          process.exit(1);
+        }
         const recentFiles = await findRecentAgentFiles(limit);
 
         const items: AgentListItem[] = [];

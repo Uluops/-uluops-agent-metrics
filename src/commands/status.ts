@@ -42,6 +42,10 @@ export function registerStatusCommands(program: Command): void {
 
       // Apply limit
       const limit = parseInt(options.limit, 10);
+      if (isNaN(limit) || limit <= 0) {
+        console.error(`Invalid --limit: '${options.limit}'. Expected a positive integer.`);
+        process.exit(1);
+      }
       entries = entries.slice(-limit);
 
       console.log(formatReport(entries));

@@ -6,6 +6,11 @@ Extract accurate metrics from Claude Code agent session files.
 
 Claude Code stores detailed execution data for every agent (Task tool) invocation in JSONL files under `~/.claude/projects/`. This utility extracts and aggregates that data to provide accurate token counts, timing, and execution statistics.
 
+## Prerequisites
+
+- **Node.js 18+** — Required for ESM support
+- **Claude Code** — Agent session files are created by Claude Code's Task tool in `~/.claude/projects/`
+
 ## Installation
 
 ### Global Installation (Recommended)
@@ -80,6 +85,8 @@ ac51171  │  4m 38s   │  190.5k  │  31 tools  │  claude-agent-workflows
 ```
 
 ### Extract Metrics for a Specific Agent
+
+> **Note:** The agent ID comes from Claude Code session files in `~/.claude/projects/`. Use `agent-metrics list` to find available IDs.
 
 ```bash
 # JSON format (default)
@@ -229,6 +236,8 @@ Ready for `save_features_list`:
 - For very short agents (single turn), `cache_read` is typically 0 since there's no prior context to read from cache
 
 ## Programmatic Usage
+
+> **Note:** The package is not yet published to npm. For programmatic imports, run `npm link` in this directory first, then `npm link @uluops/agent-metrics` in your project.
 
 ### Core Extraction Functions
 
@@ -405,6 +414,7 @@ import type {
   // Tracker format types
   TrackerTokens,
   TrackerFormat,
+  TrackerValidatorFormat,
   // Buffer types
   BufferEntry,
   BufferConfig,

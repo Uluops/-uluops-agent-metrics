@@ -68,7 +68,7 @@ export function registerBufferCommands(program: Command): void {
           const ms = unit === 'h' ? value * 60 * 60 * 1000 : value * 60 * 1000;
           sinceDate = new Date(Date.now() - ms);
         } else {
-          console.error('Invalid --since format. Use format like 30m or 2h');
+          console.error(`Invalid --since format: '${options.since}'. Use a number followed by 'm' (minutes) or 'h' (hours). Examples: 30m, 2h`);
           process.exit(1);
         }
       }
