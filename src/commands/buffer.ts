@@ -173,13 +173,4 @@ export function registerBufferCommands(program: Command): void {
       console.error('Specify --session, --agents, or --expired');
       process.exit(1);
     });
-
-  // Buffer gc (garbage collect)
-  bufferCmd
-    .command('gc')
-    .description('Garbage collect expired entries')
-    .action(() => {
-      const count = cleanupExpired();
-      console.log(`Garbage collected ${count} expired entries.`);
-    });
 }

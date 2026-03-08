@@ -166,12 +166,12 @@ describe('Buffer Commands', () => {
     });
   });
 
-  describe('buffer gc command', () => {
-    it('should garbage collect expired entries', async () => {
-      await program.parseAsync(['node', 'test', 'buffer', 'gc']);
+  describe('buffer clear --expired command', () => {
+    it('should clear expired entries', async () => {
+      await program.parseAsync(['node', 'test', 'buffer', 'clear', '--expired']);
 
       const textOutput = output.join('\n');
-      assert.ok(textOutput.includes('Garbage collected'), 'Should report gc result');
+      assert.ok(textOutput.includes('expired'), 'Should report expired entries cleared');
     });
   });
 });

@@ -108,8 +108,8 @@ CORRELATION WITH TRACKER
 MAINTENANCE
 ──────────────────────────────────────────────────────────────────────────────
 
-  Garbage collect expired entries:
-    $ agent-metrics buffer gc
+  Clear expired entries (garbage collect):
+    $ agent-metrics buffer clear --expired
 
   Clear entries for a session (after saving to tracker):
     $ agent-metrics buffer clear --session <session-id>

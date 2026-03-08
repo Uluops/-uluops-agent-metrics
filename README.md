@@ -459,8 +459,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | `buffer session <id> [-f format]` | Get all entries for a session |
 | `buffer clear --session <id>` | Clear entries for a session |
 | `buffer clear --agents <id...>` | Clear specific agent IDs |
-| `buffer clear --expired` | Clear only expired entries |
-| `buffer gc` | Garbage collect expired entries |
+| `buffer clear --expired` | Clear only expired entries (garbage collect) |
 
 ### Log Commands
 
@@ -582,7 +581,7 @@ agent-metrics buffer session <session-id>
 agent-metrics buffer session <session-id> --format tracker
 
 # Clean up expired entries
-agent-metrics buffer gc
+agent-metrics buffer clear --expired
 ```
 
 ### Workflow Integration
