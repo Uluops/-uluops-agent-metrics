@@ -210,7 +210,7 @@ export function logMetricsCapture(
     };
   },
   options?: {
-    validatorName?: string;
+    agentName?: string;
     projectPath?: string;
     source?: 'hook' | 'cli' | 'api';
   }
@@ -225,7 +225,7 @@ export function logMetricsCapture(
     tokens_output: metrics.tokens?.output,
     tool_uses: metrics.execution?.tool_use_count,
     errors: metrics.execution?.error_count,
-    validator: options?.validatorName,
+    agent: options?.agentName,
     project: options?.projectPath,
     source: options?.source || 'unknown',
   });

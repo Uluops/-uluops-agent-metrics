@@ -55,16 +55,16 @@ const STDIN_READ_TIMEOUT_MS = 100; // Timeout for reading stdin when no data rec
 export const AGENT_ID_PATTERN = /^[a-f0-9]+$/;
 
 /**
- * Validator pattern entry: [regex pattern, canonical validator name]
+ * Agent pattern entry: [regex pattern, canonical agent name]
  *
  * ORDERING: Patterns are matched in order. More specific patterns should come
  * before general ones to ensure correct matching. For example, "code-auditor"
  * must come before "code-validator" since both contain "code".
  */
-export type ValidatorPattern = readonly [RegExp, string];
+export type AgentPattern = readonly [RegExp, string];
 
 /**
- * Known validator patterns for auto-detection from task prompts.
+ * Known agent patterns for auto-detection from task prompts.
  *
  * ## Ordering Rationale
  *
@@ -85,7 +85,7 @@ export type ValidatorPattern = readonly [RegExp, string];
  * 5. Infrastructure
  * 6. Domain-specific
  */
-export const VALIDATOR_PATTERNS: readonly ValidatorPattern[] = [
+export const AGENT_PATTERNS: readonly AgentPattern[] = [
   // Code quality - ordered by specificity
   [/code.?auditor/i, 'code-auditor'],
   [/code.?optimizer/i, 'code-optimizer'],
@@ -147,12 +147,12 @@ export function extractAgentIdFromPath(transcriptPath: string): string | null {
  * Returns the first matching validator name, or null if no match.
  *
  * @param content - The text content to search
- * @param patterns - Validator patterns to match against (uses VALIDATOR_PATTERNS if not provided)
+ * @param patterns - Agent patterns to match against (uses AGENT_PATTERNS if not provided)
  * @returns The matched validator name, or null
  */
-export function matchValidatorPattern(
+export function matchAgentPattern(
   content: string,
-  patterns: readonly ValidatorPattern[] = VALIDATOR_PATTERNS
+  patterns: readonly AgentPattern[] = AGENT_PATTERNS
 ): string | null {
   for (const [pattern, name] of patterns) {
     if (pattern.test(content)) {
@@ -207,49 +207,49 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
 }
 
 /**
- * Pattern for explicit validator tag: [validator:name]
+ * Pattern for explicit agent tag: [agent:name] or [validator:name] (legacy)
  * This is the highest-priority detection method, used by workflow commands
- * to explicitly declare which validator is being invoked.
+ * to explicitly declare which agent is being invoked.
  *
- * Example: "[validator:code-validator] Validate code quality..."
+ * Example: "[agent:code-validator] Validate code quality..."
  */
-export const EXPLICIT_VALIDATOR_TAG_PATTERN = /\[validator:([a-z][a-z0-9-]*)\]/i;
+export const EXPLICIT_AGENT_TAG_PATTERN = /\[(?:agent|validator):([a-z][a-z0-9-]*)\]/i;
 
 /**
- * Extract validator name from explicit tag in content.
- * Looks for pattern: [validator:name]
+ * Extract agent name from explicit tag in content.
+ * Looks for pattern: [agent:name] or [validator:name] (legacy)
  *
  * @param content - The text content to search
  * @returns The extracted validator name, or null if no tag found
  */
-export function extractExplicitValidatorTag(content: string): string | null {
-  const match = content.match(EXPLICIT_VALIDATOR_TAG_PATTERN);
+export function extractExplicitAgentTag(content: string): string | null {
+  const match = content.match(EXPLICIT_AGENT_TAG_PATTERN);
   return match ? match[1].toLowerCase() : null;
 }
 
 /**
  * Detect validator name from the first user message in transcript.
  * Uses two-tier detection:
- * 1. Explicit tag: [validator:name] (highest priority)
- * 2. Pattern matching: VALIDATOR_PATTERNS (fallback)
+ * 1. Explicit tag: [agent:name] or [validator:name] (highest priority)
+ * 2. Pattern matching: AGENT_PATTERNS (fallback)
  *
  * @param transcriptPath - Path to the agent transcript file (may start with ~)
  * @returns The detected validator name, or null if not found
  */
-export async function detectValidatorName(transcriptPath: string): Promise<string | null> {
+export async function detectAgentName(transcriptPath: string): Promise<string | null> {
   const content = await getFirstUserMessageContent(transcriptPath);
   if (!content) {
     return null;
   }
 
   // First try explicit tag (highest priority)
-  const explicitName = extractExplicitValidatorTag(content);
+  const explicitName = extractExplicitAgentTag(content);
   if (explicitName) {
     return explicitName;
   }
 
   // Fall back to pattern matching
-  return matchValidatorPattern(content);
+  return matchAgentPattern(content);
 }
 
 /**
@@ -289,11 +289,11 @@ async function handleHook(input: HookInput): Promise<HookOutput> {
     const metrics = await extractMetricsFromFile(expandedPath);
 
     // Try to detect validator name
-    const validatorName = await detectValidatorName(expandedPath);
+    const agentName = await detectAgentName(expandedPath);
 
     // Write to buffer
     appendToBuffer(metrics, {
-      validatorName: validatorName || undefined,
+      agentName: agentName || undefined,
       projectPath: input.cwd,
       source: 'hook',
     });
@@ -305,7 +305,7 @@ async function handleHook(input: HookInput): Promise<HookOutput> {
     const toolSummary = toolCount > 0
       ? `${toolCount} tool${toolCount !== 1 ? 's' : ''}`
       : 'no tools';
-    const name = validatorName || agentId;
+    const name = agentName || agentId;
 
     // Build summary line
     const summary = `[${name}] ${modelShort} | ${metrics.duration_formatted} | ${tokensK}k tokens | ${toolSummary}`;

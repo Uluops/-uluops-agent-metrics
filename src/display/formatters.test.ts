@@ -76,7 +76,7 @@ function createMockBufferEntry(overrides: Partial<BufferEntry> = {}): BufferEntr
     end_time: metrics.end_time,
     expires_at: '2026-01-10T10:05:00.000Z',
     metrics,
-    validator_name: 'test-validator',
+    agent_name: 'test-agent',
     project_path: '/home/user/test-project',
     ...overrides,
   };
@@ -103,27 +103,27 @@ describe('Display Formatters', () => {
 
       assert.ok(result.includes('Buffered Metrics'));
       assert.ok(result.includes('Agent ID'));
-      assert.ok(result.includes('Validator'));
+      assert.ok(result.includes('Agent Name'));
       assert.ok(result.includes('abc1234'));
-      assert.ok(result.includes('test-validator'));
+      assert.ok(result.includes('test-agent'));
       assert.ok(result.includes('Total: 1 entries'));
     });
 
-    it('should truncate long validator names', () => {
+    it('should truncate long agent names', () => {
       const entries = [
         createMockBufferEntry({
-          validator_name: 'this-is-a-very-long-validator-name-that-should-be-truncated',
+          agent_name: 'this-is-a-very-long-agent-name-that-should-be-truncated-here',
         }),
       ];
       const result = formatBufferList(entries);
 
       // Should be truncated to 25 chars
-      assert.ok(result.includes('this-is-a-very-long-valid'));
-      assert.ok(!result.includes('that-should-be-truncated'));
+      assert.ok(result.includes('this-is-a-very-long-agent'));
+      assert.ok(!result.includes('truncated-here'));
     });
 
-    it('should handle missing validator name', () => {
-      const entries = [createMockBufferEntry({ validator_name: undefined })];
+    it('should handle missing agent name', () => {
+      const entries = [createMockBufferEntry({ agent_name: undefined })];
       const result = formatBufferList(entries);
 
       assert.ok(result.includes('unknown'));

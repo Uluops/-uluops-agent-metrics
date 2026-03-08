@@ -41,7 +41,7 @@ export function registerBufferCommands(program: Command): void {
     .command('list')
     .description('List buffered metrics entries')
     .option('-s, --session <id>', 'Filter by session ID')
-    .option('-v, --validator <name>', 'Filter by validator name')
+    .option('--agent-name <name>', 'Filter by agent name')
     .option('-p, --project <path>', 'Filter by project path (partial match)')
     .option('--since <duration>', 'Filter entries captured in last duration (e.g., 30m, 1h, 2h)')
     .option('--end-after <iso-date>', 'Filter agents that finished after this time (ISO 8601)')
@@ -50,7 +50,7 @@ export function registerBufferCommands(program: Command): void {
     .option('-f, --format <format>', 'Output format: table, json, tracker', 'table')
     .action((options: {
       session?: string;
-      validator?: string;
+      agentName?: string;
       project?: string;
       since?: string;
       endAfter?: string;
@@ -93,7 +93,7 @@ export function registerBufferCommands(program: Command): void {
 
       let entries = queryBuffer({
         sessionId: options.session,
-        validatorName: options.validator,
+        agentName: options.agentName,
         since: sinceDate,
         endTimeAfter,
         endTimeBefore,

@@ -96,7 +96,7 @@ agent-metrics extract a80e24f
 agent-metrics extract a80e24f --format summary
 
 # Tracker-compatible format
-agent-metrics extract a80e24f --format tracker --validator prompt-quality-validator
+agent-metrics extract a80e24f --format tracker --agent-name prompt-quality-validator
 ```
 
 ### Compare Multiple Agents
@@ -204,7 +204,7 @@ Agent Metrics: a80e24f
 
 ### Tracker Format
 
-Ready for `save_features_list`:
+Ready for `save_run`:
 
 ```json
 {
@@ -291,7 +291,7 @@ import {
 // Query buffer with filters
 const entries = queryBuffer({
   sessionId: 'ea588859-88cd-4511-851a-4fe928cd77c7',
-  validatorName: 'code-validator',
+  agentName: 'code-validator',
   since: new Date(Date.now() - 3600000), // Last hour
   includeExpired: false,
 });
@@ -396,7 +396,7 @@ logMetricsCapture(
   'agent-abc123',
   'session-xyz',
   { model: 'claude-sonnet-4-5', duration_ms: 5000, tokens: {...}, execution: {...} },
-  { validatorName: 'code-validator', source: 'hook' }
+  { agentName: 'code-validator', source: 'hook' }
 );
 logBufferOperation('append', { agent_id: 'abc123', buffer_path: '/path/to/buffer' });
 ```
@@ -414,7 +414,7 @@ import type {
   // Tracker format types
   TrackerTokens,
   TrackerFormat,
-  TrackerValidatorFormat,
+  TrackerAgentFormat,
   // Buffer types
   BufferEntry,
   BufferConfig,
@@ -446,7 +446,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | `status` | Show buffer statistics (alias for `buffer status`) |
 | `report [-n limit] [--current]` | Show recent auto-captured metrics in table format |
 | `list [-n <limit>]` | List recent agent runs from session files |
-| `extract <id> [-f format] [-v validator]` | Extract metrics for a specific agent |
+| `extract <id> [-f format] [-a agent-name]` | Extract metrics for a specific agent |
 | `compare <id...>` | Compare multiple agents side-by-side |
 | `find <id>` | Find the file location for an agent |
 
@@ -455,7 +455,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | Command | Description |
 |---------|-------------|
 | `buffer status` | Show buffer statistics |
-| `buffer list [-s session] [-v validator] [--since duration] [-f format]` | List buffered entries |
+| `buffer list [-s session] [-a agent-name] [--since duration] [-f format]` | List buffered entries |
 | `buffer session <id> [-f format]` | Get all entries for a session |
 | `buffer clear --session <id>` | Clear entries for a session |
 | `buffer clear --agents <id...>` | Clear specific agent IDs |
@@ -554,13 +554,14 @@ Add the hook to `~/.claude/settings.json`:
 }
 ```
 
-### Validator Detection
+### Agent Detection
 
-The hook auto-detects validator names from the task prompt:
+The hook auto-detects agent names from the task prompt:
 - `code-validator`, `test-architect`, `security-analyst`
 - `type-safety-validator`, `frontend-validator`, `public-interface-validator`
 - `api-contract-validator`, `mcp-validator`, `adl-meta-validator`
-- And 20+ more validators
+- `code-optimizer`, `data-science`, `ml-algorithms`
+- And 20+ more agents
 
 ### Buffer Commands
 
@@ -571,13 +572,13 @@ agent-metrics buffer status
 # List all buffered entries
 agent-metrics buffer list
 
-# Filter by validator
-agent-metrics buffer list --validator code-validator
+# Filter by agent name
+agent-metrics buffer list --agent-name code-validator
 
 # Get all entries for a session (useful for workflows)
 agent-metrics buffer session <session-id>
 
-# Output in tracker format for save_features_list
+# Output in tracker format for save_run
 agent-metrics buffer session <session-id> --format tracker
 
 # Clean up expired entries
@@ -586,17 +587,17 @@ agent-metrics buffer gc
 
 ### Workflow Integration
 
-After running a multi-validator workflow:
+After running a multi-agent workflow:
 
 ```bash
 # Get session ID from parent conversation
 SESSION_ID="ea588859-88cd-4511-851a-4fe928cd77c7"
 
-# Get all validators' metrics in tracker format
+# Get all agents' metrics in tracker format
 agent-metrics buffer session $SESSION_ID --format tracker
 ```
 
-Output ready for `save_features_list`:
+Output ready for `save_run`:
 
 ```json
 [
@@ -624,9 +625,9 @@ After running a validation agent:
 AGENT_ID="a80e24f"
 
 # Extract metrics in tracker format
-METRICS=$(agent-metrics extract $AGENT_ID --format tracker --validator code-validator)
+METRICS=$(agent-metrics extract $AGENT_ID --format tracker --agent-name code-validator)
 
-# Use in save_features_list call
+# Use in save_run call
 echo $METRICS
 ```
 

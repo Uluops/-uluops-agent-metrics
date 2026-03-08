@@ -99,12 +99,12 @@ describe('Buffer Module', () => {
     it('should include optional metadata', () => {
       const metrics = createTestMetrics();
       const entry = appendToBuffer(metrics, {
-        validatorName: 'code-validator',
+        agentName: 'code-validator',
         projectPath: '/path/to/project',
         config: TEST_CONFIG,
       });
 
-      assert.strictEqual(entry.validator_name, 'code-validator');
+      assert.strictEqual(entry.agent_name, 'code-validator');
       assert.strictEqual(entry.project_path, '/path/to/project');
     });
 
@@ -204,12 +204,12 @@ describe('Buffer Module', () => {
       entries.forEach((e) => assert.strictEqual(e.session_id, sessionA));
     });
 
-    it('should filter by validator name', () => {
-      appendToBuffer(createTestMetrics(), { validatorName: 'code-validator', config: TEST_CONFIG });
-      appendToBuffer(createTestMetrics(), { validatorName: 'test-architect', config: TEST_CONFIG });
-      appendToBuffer(createTestMetrics(), { validatorName: 'code-validator', config: TEST_CONFIG });
+    it('should filter by agent name', () => {
+      appendToBuffer(createTestMetrics(), { agentName: 'code-validator', config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics(), { agentName: 'test-architect', config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics(), { agentName: 'code-validator', config: TEST_CONFIG });
 
-      const entries = queryBuffer({ validatorName: 'code-validator' }, TEST_CONFIG);
+      const entries = queryBuffer({ agentName: 'code-validator' }, TEST_CONFIG);
       assert.strictEqual(entries.length, 2);
     });
 

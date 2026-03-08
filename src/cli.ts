@@ -49,7 +49,7 @@ BASIC COMMANDS
   Extract metrics for a specific agent:
     $ agent-metrics extract a7c642b
     $ agent-metrics extract a7c642b --format summary
-    $ agent-metrics extract a7c642b --format tracker --validator code-validator
+    $ agent-metrics extract a7c642b --format tracker --agent-name code-validator
 
   Find agent file location:
     $ agent-metrics find a7c642b
@@ -73,9 +73,9 @@ BUFFER COMMANDS
     $ agent-metrics buffer list --project ops-uluops-mcp
     $ agent-metrics buffer list -p dashboard
 
-  Filter by validator:
-    $ agent-metrics buffer list --validator code-validator
-    $ agent-metrics buffer list -v test-architect
+  Filter by agent name:
+    $ agent-metrics buffer list --agent-name code-validator
+    $ agent-metrics buffer list --agent-name test-architect
 
   Filter by time window (when agents finished):
     $ agent-metrics buffer list --end-after 2026-01-14T04:00:00Z
@@ -93,7 +93,7 @@ BUFFER COMMANDS
 CORRELATION WITH TRACKER
 ──────────────────────────────────────────────────────────────────────────────
 
-  Find validators that ran around a specific tracker run timestamp:
+  Find agents that ran around a specific tracker run timestamp:
 
     # If tracker shows run at 2026-01-14T05:11:33Z, search window before:
     $ agent-metrics buffer list \

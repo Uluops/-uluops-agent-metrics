@@ -27,8 +27,8 @@ export interface BufferEntry {
   expires_at: string;
   /** Full metrics data */
   metrics: AgentMetrics;
-  /** Optional validator name (if detected from transcript) */
-  validator_name?: string;
+  /** Optional agent name (if detected from transcript) */
+  agent_name?: string;
   /** Optional project path */
   project_path?: string;
 }
@@ -212,7 +212,7 @@ function releaseLock(lockPath: string): void {
  *
  * @param metrics - The agent metrics to store
  * @param options - Optional configuration for the buffer entry
- * @param options.validatorName - Name of the validator that produced these metrics
+ * @param options.agentName - Name of the agent that produced these metrics
  * @param options.projectPath - Project path where the agent ran
  * @param options.ttlMs - Time-to-live in milliseconds (default: 24 hours)
  * @param options.config - Buffer configuration override
@@ -222,7 +222,7 @@ function releaseLock(lockPath: string): void {
 export function appendToBuffer(
   metrics: AgentMetrics,
   options: {
-    validatorName?: string;
+    agentName?: string;
     projectPath?: string;
     ttlMs?: number;
     config?: BufferConfig;
@@ -243,7 +243,7 @@ export function appendToBuffer(
     end_time: metrics.end_time,
     expires_at: new Date(now.getTime() + ttl).toISOString(),
     metrics,
-    validator_name: options.validatorName,
+    agent_name: options.agentName,
     project_path: options.projectPath,
   };
 
@@ -271,7 +271,7 @@ export function appendToBuffer(
         execution: metrics.execution,
       },
       {
-        validatorName: options.validatorName,
+        agentName: options.agentName,
         projectPath: options.projectPath,
         source: options.source || 'api',
       }
@@ -341,7 +341,7 @@ export function readValidEntries(config: BufferConfig = DEFAULT_CONFIG): BufferE
  * @param query - Query filters
  * @param query.sessionId - Filter by session ID
  * @param query.agentId - Filter by agent ID
- * @param query.validatorName - Filter by validator name
+ * @param query.agentName - Filter by validator name
  * @param query.projectPath - Filter by project path
  * @param query.since - Only include entries captured after this date
  * @param query.endTimeAfter - Only include entries where agent finished after this date
@@ -354,7 +354,7 @@ export function queryBuffer(
   query: {
     sessionId?: string;
     agentId?: string;
-    validatorName?: string;
+    agentName?: string;
     projectPath?: string;
     since?: Date;
     endTimeAfter?: Date;
@@ -370,7 +370,7 @@ export function queryBuffer(
   return entries.filter((entry) => {
     if (query.sessionId && entry.session_id !== query.sessionId) return false;
     if (query.agentId && entry.agent_id !== query.agentId) return false;
-    if (query.validatorName && entry.validator_name !== query.validatorName) return false;
+    if (query.agentName && entry.agent_name !== query.agentName) return false;
     if (query.projectPath && entry.project_path !== query.projectPath) return false;
     if (query.since && new Date(entry.captured_at) < query.since) return false;
     // Filter by agent end_time (when the agent actually finished)
@@ -567,7 +567,7 @@ export function getBufferStats(config: BufferConfig = DEFAULT_CONFIG): BufferSta
 /**
  * Tracker-compatible validator format
  */
-export interface TrackerValidatorFormat {
+export interface TrackerAgentFormat {
   name: string;
   model: string;
   tokens: {
@@ -583,15 +583,15 @@ export interface TrackerValidatorFormat {
 /**
  * Convert buffer entries to validation tracker format.
  *
- * This format is ready for use with save_features_list and includes
+ * This format is ready for use with save_run and includes
  * the full cache token breakdown.
  *
  * @param entries - Buffer entries to convert
  * @returns Array of tracker-compatible validator objects
  */
-export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerValidatorFormat[] {
+export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerAgentFormat[] {
   return entries.map((e) => ({
-    name: e.validator_name || 'unknown',
+    name: e.agent_name || 'unknown',
     model: e.metrics.model,
     tokens: {
       input_tokens: e.metrics.tokens.input,

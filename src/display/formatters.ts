@@ -65,18 +65,18 @@ export function formatBufferList(entries: BufferEntry[]): string {
   lines.push('═'.repeat(100));
   lines.push('');
   lines.push(
-    'Agent ID   │  Validator                  │  Duration  │  Tokens    │  Captured'
+    'Agent ID   │  Agent Name                 │  Duration  │  Tokens    │  Captured'
   );
   lines.push('─'.repeat(100));
 
   for (const entry of entries) {
-    const validatorName = (entry.validator_name || 'unknown').slice(0, 25).padEnd(25);
+    const agentName = (entry.agent_name || 'unknown').slice(0, 25).padEnd(25);
     const duration = entry.metrics.duration_formatted.padEnd(8);
     const tokens = formatTokens(entry.metrics.tokens.total_effective).padEnd(8);
     const captured = new Date(entry.captured_at).toLocaleString().slice(0, 20);
 
     lines.push(
-      `${entry.agent_id.padEnd(10)}  │  ${validatorName}  │  ${duration}  │  ${tokens}  │  ${captured}`
+      `${entry.agent_id.padEnd(10)}  │  ${agentName}  │  ${duration}  │  ${tokens}  │  ${captured}`
     );
   }
 
@@ -107,10 +107,10 @@ export function formatBufferSession(sessionId: string, entries: BufferEntry[]): 
   let totalTokens = 0;
 
   for (const entry of entries) {
-    const validatorName = (entry.validator_name || 'unknown').padEnd(25);
+    const agentName = (entry.agent_name || 'unknown').padEnd(25);
     const dur = entry.metrics.duration_formatted.padEnd(8);
     const tok = formatTokens(entry.metrics.tokens.total_effective).padEnd(8);
-    lines.push(`${entry.agent_id}  │  ${validatorName}  │  ${dur}  │  ${tok}`);
+    lines.push(`${entry.agent_id}  │  ${agentName}  │  ${dur}  │  ${tok}`);
     totalDuration += entry.metrics.duration_ms;
     totalTokens += entry.metrics.tokens.total_effective;
   }

@@ -409,7 +409,7 @@ describe('Logger Module', () => {
           },
         },
         {
-          validatorName: 'code-validator',
+          agentName: 'code-validator',
           projectPath: '/home/user/project',
           source: 'hook',
         }

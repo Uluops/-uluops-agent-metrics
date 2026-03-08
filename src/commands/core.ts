@@ -38,8 +38,8 @@ export function registerCoreCommands(program: Command): void {
     .description('Extract metrics for a specific agent ID')
     .option('-p, --project <path>', 'Project path to search in')
     .addOption(new Option('-f, --format <format>', 'Output format').choices(['json', 'summary', 'tracker']).default('json'))
-    .option('-v, --validator <name>', 'Validator name for tracker format')
-    .action(async (agentId: string, options: { project?: string; format: ExtractFormat; validator?: string }) => {
+    .option('-a, --agent-name <name>', 'Agent name for tracker format')
+    .action(async (agentId: string, options: { project?: string; format: ExtractFormat; agentName?: string }) => {
       try {
         const metrics = await extractAgentMetrics(agentId, {
           projectPath: options.project,
@@ -55,14 +55,14 @@ export function registerCoreCommands(program: Command): void {
             console.log(formatMetricsSummary(metrics));
             break;
           case 'tracker':
-            // Auto-lookup validator name from buffer if not provided
-            let validatorName = options.validator;
-            if (!validatorName) {
+            // Auto-lookup agent name from buffer if not provided
+            let agentName = options.agentName;
+            if (!agentName) {
               const bufferEntries = queryBuffer({ agentId });
               const bufferEntry = bufferEntries.find(e => e.agent_id === agentId);
-              validatorName = bufferEntry?.validator_name || 'unknown-validator';
+              agentName = bufferEntry?.agent_name || 'unknown';
             }
-            console.log(JSON.stringify(toTrackerFormat(metrics, validatorName), null, 2));
+            console.log(JSON.stringify(toTrackerFormat(metrics, agentName), null, 2));
             break;
           case 'json':
             console.log(JSON.stringify(metrics, null, 2));

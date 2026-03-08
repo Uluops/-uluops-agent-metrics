@@ -95,11 +95,11 @@ describe('Core Commands', () => {
     });
 
     it('should output tracker format when requested', async () => {
-      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-v', 'test-validator']);
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'test-agent']);
 
       const jsonOutput = output.join('\n');
       assert.ok(jsonOutput.includes('"name"'), 'Should output tracker format');
-      assert.ok(jsonOutput.includes('test-validator'), 'Should use provided validator name');
+      assert.ok(jsonOutput.includes('test-agent'), 'Should use provided agent name');
     });
 
     it('should error for non-existent agent ID', async () => {

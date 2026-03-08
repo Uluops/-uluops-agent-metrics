@@ -309,15 +309,15 @@ export interface TrackerFormat {
  * Convert metrics to tracker-compatible format
  *
  * @param metrics - AgentMetrics object
- * @param validatorName - Name of the validator
+ * @param agentName - Name of the agent
  * @returns Object ready for validation tracker
  */
 export function toTrackerFormat(
   metrics: AgentMetrics,
-  validatorName: string
+  agentName: string
 ): TrackerFormat {
   return {
-    name: validatorName,
+    name: agentName,
     model: metrics.model,
     tokens: {
       input_tokens: metrics.tokens.input,
