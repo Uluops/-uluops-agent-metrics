@@ -238,7 +238,8 @@ describe('Logger Module', () => {
 
       // Current log file should be smaller than maxFileSize or recently rotated
       const stats = fs.statSync(TEST_LOG_PATH);
-      assert.ok(stats.size < 500, 'Current log should be relatively small after rotation');
+      // After rotation, current log should be smaller than maxFileSize (100 bytes) + one message overhead
+      assert.ok(stats.size < 100 * 5, 'Current log should be relatively small after rotation');
     });
 
     it('should not rotate when under maxFileSize', () => {

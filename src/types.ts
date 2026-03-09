@@ -148,6 +148,7 @@ export interface ThinkingBlock {
   thinking: string;
 }
 
+/** Union of known content block types, plus a catch-all for unknown block types (e.g. future API additions) */
 export type ContentBlock = ToolUseBlock | TextBlock | ThinkingBlock | { type: string };
 
 /**

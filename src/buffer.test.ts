@@ -223,6 +223,16 @@ describe('Buffer Module', () => {
       assert.strictEqual(withExpired.length, 2);
       assert.strictEqual(withoutExpired.length, 1);
     });
+
+    it('should treat TTL=0 entries as immediately expired', () => {
+      appendToBuffer(createTestMetrics(), { ttlMs: 0, config: TEST_CONFIG });
+
+      const withExpired = queryBuffer({ includeExpired: true }, TEST_CONFIG);
+      const withoutExpired = queryBuffer({ includeExpired: false }, TEST_CONFIG);
+
+      assert.strictEqual(withExpired.length, 1, 'Should exist in buffer');
+      assert.strictEqual(withoutExpired.length, 0, 'Should be expired with TTL=0');
+    });
   });
 
   describe('getLatestForSession', () => {

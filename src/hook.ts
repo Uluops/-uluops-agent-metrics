@@ -268,6 +268,14 @@ async function handleHook(input: HookInput): Promise<HookOutput> {
 
     const expandedPath = transcriptPath.replace(/^~/, os.homedir());
 
+    // Validate path is under ~/.claude/ to prevent reading arbitrary files
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const resolvedPath = path.resolve(expandedPath);
+    if (!resolvedPath.startsWith(claudeDir + path.sep)) {
+      console.error(`[agent-metrics] Transcript path outside ~/.claude/: ${resolvedPath}`);
+      return { decision: 'approve' };
+    }
+
     // Use agent_id if provided, otherwise extract from path
     const agentId = input.agent_id || extractAgentIdFromPath(transcriptPath);
     if (!agentId) {

@@ -449,6 +449,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | `extract <id> [-f format] [-a agent-name]` | Extract metrics for a specific agent |
 | `compare <id...>` | Compare multiple agents side-by-side |
 | `find <id>` | Find the file location for an agent |
+| `examples` | Show usage examples for common workflows |
 
 ### Buffer Commands
 

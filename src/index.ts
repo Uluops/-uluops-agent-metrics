@@ -61,7 +61,7 @@ export {
   entriesToTrackerFormat,
 } from './buffer.js';
 
-export type { BufferEntry, BufferConfig, TrackerAgentFormat } from './buffer.js';
+export type { BufferEntry, BufferConfig, BufferStats, TrackerAgentFormat } from './buffer.js';
 
 // Logger functions
 export {
@@ -77,4 +77,4 @@ export {
   logBufferOperation,
 } from './logger.js';
 
-export type { LogLevel, LoggerConfig } from './logger.js';
+export type { LogLevel, LoggerConfig, LogStats } from './logger.js';

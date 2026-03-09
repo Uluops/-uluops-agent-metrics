@@ -78,8 +78,7 @@ describe('Log Commands', () => {
       await program.parseAsync(['node', 'test', 'log', 'status']);
 
       const textOutput = output.join('\n');
-      assert.ok(textOutput.includes('Log') || textOutput.includes('Status'),
-        'Should show status output');
+      assert.ok(textOutput.includes('Log'), 'Should show Log in status output');
     });
 
     it('should show log status with entries', async () => {
@@ -90,8 +89,9 @@ describe('Log Commands', () => {
       await program.parseAsync(['node', 'test', 'log', 'status']);
 
       const textOutput = output.join('\n');
-      assert.ok(textOutput.includes('Log') || textOutput.includes('2') || textOutput.includes('lines'),
-        'Should show entry count');
+      assert.ok(textOutput.includes('Log'), 'Should include Log header');
+      assert.ok(textOutput.includes('2') || textOutput.includes('Line count'),
+        'Should show entry count or line count');
     });
   });
 
@@ -123,8 +123,10 @@ describe('Log Commands', () => {
       await program.parseAsync(['node', 'test', 'log', 'tail', '-n', '3']);
 
       const textOutput = output.join('\n');
-      // Should show last 3 lines
       assert.ok(textOutput.includes('Test message'), 'Should show log messages');
+      // Should only show last 3 messages, not earlier ones
+      const messageLines = textOutput.split('\n').filter(l => l.includes('Test message'));
+      assert.ok(messageLines.length <= 3, `Should show at most 3 lines, got ${messageLines.length}`);
     });
 
     // Skip follow mode test as it requires SIGINT handling
