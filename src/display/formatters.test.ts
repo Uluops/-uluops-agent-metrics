@@ -91,6 +91,26 @@ describe('Display Formatters', () => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
+  describe('formatBufferStatus', () => {
+    it('should include title and all expected fields', () => {
+      const result = formatBufferStatus('Test Buffer Status');
+
+      assert.ok(result.includes('Test Buffer Status'), 'Should include the title');
+      assert.ok(result.includes('Total entries:'), 'Should include total entries');
+      assert.ok(result.includes('Valid entries:'), 'Should include valid entries');
+      assert.ok(result.includes('Expired entries:'), 'Should include expired entries');
+      assert.ok(result.includes('Unique sessions:'), 'Should include unique sessions');
+      assert.ok(result.includes('Unique agents:'), 'Should include unique agents');
+      assert.ok(result.includes('Buffer size:'), 'Should include buffer size');
+      assert.ok(result.includes('KB'), 'Should show size in KB');
+    });
+
+    it('should include separator line', () => {
+      const result = formatBufferStatus('Status');
+      assert.ok(result.includes('═'), 'Should include separator line');
+    });
+  });
+
   describe('formatBufferList', () => {
     it('should return message for empty entries', () => {
       const result = formatBufferList([]);

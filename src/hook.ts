@@ -50,6 +50,7 @@ interface HookOutput {
  * Configuration constants
  */
 const STDIN_READ_TIMEOUT_MS = 100; // Timeout for reading stdin when no data received
+const MAX_STDIN_BYTES = 1 * 1024 * 1024; // 1MB max stdin to prevent memory exhaustion
 
 /** Valid agent ID pattern: lowercase hex string */
 export const AGENT_ID_PATTERN = /^[a-f0-9]+$/;
@@ -341,6 +342,9 @@ async function readStdin(): Promise<string> {
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (chunk) => {
       data += chunk;
+      if (Buffer.byteLength(data) > MAX_STDIN_BYTES) {
+        done('{}');
+      }
     });
     process.stdin.on('end', () => {
       done(data || '{}');
@@ -363,7 +367,8 @@ async function main(): Promise<void> {
   try {
     // Read input from stdin
     const inputData = await readStdin();
-    const input: HookInput = JSON.parse(inputData || '{}');
+    const parsed: unknown = JSON.parse(inputData || '{}');
+    const input: HookInput = (parsed && typeof parsed === 'object') ? parsed as HookInput : {} as HookInput;
 
     // Handle the hook
     const output = await handleHook(input);
@@ -381,5 +386,5 @@ async function main(): Promise<void> {
 // Run if called directly (not when imported as a module for testing)
 const __filename = fileURLToPath(import.meta.url);
 if (process.argv[1] === __filename || process.argv[1]?.endsWith('/hook.js')) {
-  main();
+  main().catch(() => process.exit(1));
 }

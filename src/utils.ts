@@ -242,9 +242,10 @@ export function parseTimestamp(timestamp: string): Date {
  * @returns Duration in milliseconds
  */
 export function calculateDuration(start: string, end: string): number {
-  const startDate = parseTimestamp(start);
-  const endDate = parseTimestamp(end);
-  return endDate.getTime() - startDate.getTime();
+  const startMs = parseTimestamp(start).getTime();
+  const endMs = parseTimestamp(end).getTime();
+  if (isNaN(startMs) || isNaN(endMs)) return 0;
+  return endMs - startMs;
 }
 
 /**

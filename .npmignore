@@ -1,0 +1,6 @@
+dist/**/*.test.js
+dist/**/*.test.d.ts
+dist/**/*.test.js.map
+dist/test-utils.js
+dist/test-utils.d.ts
+dist/test-utils.js.map

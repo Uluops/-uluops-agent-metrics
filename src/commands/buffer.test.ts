@@ -52,8 +52,8 @@ describe('Buffer Commands', () => {
       await program.parseAsync(['node', 'test', 'buffer', 'status']);
 
       const textOutput = output.join('\n');
-      // Status command should produce output about the buffer
-      assert.ok(textOutput.length > 0 || output.length >= 0, 'Should produce output');
+      assert.ok(textOutput.includes('Buffer') || textOutput.includes('entries'),
+        'Should produce output about buffer status');
     });
   });
 

@@ -128,13 +128,14 @@ export async function extractMetricsFromFile(
         models.add(message.message.model);
       }
 
-      // Accumulate token usage
+      // Accumulate token usage (validate numeric to prevent NaN propagation)
       if (message.message?.usage) {
         const usage = message.message.usage;
-        totalInputTokens += usage.input_tokens || 0;
-        totalOutputTokens += usage.output_tokens || 0;
-        totalCacheCreationTokens += usage.cache_creation_input_tokens || 0;
-        totalCacheReadTokens += usage.cache_read_input_tokens || 0;
+        const num = (v: unknown): number => typeof v === 'number' && !isNaN(v) ? v : 0;
+        totalInputTokens += num(usage.input_tokens);
+        totalOutputTokens += num(usage.output_tokens);
+        totalCacheCreationTokens += num(usage.cache_creation_input_tokens);
+        totalCacheReadTokens += num(usage.cache_read_input_tokens);
       }
 
       // Count tool uses from assistant messages

@@ -421,32 +421,41 @@ export function getAllForSession(
 }
 
 /**
+ * Execute a function while holding the buffer file lock.
+ * Acquires the lock, runs the function, then releases.
+ */
+function withFileLock<T>(config: BufferConfig, fn: () => T): T {
+  const lockPath = config.bufferPath + '.lock';
+  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
+
+  try {
+    return fn();
+  } finally {
+    if (lockAcquired) {
+      releaseLock(lockPath);
+    }
+  }
+}
+
+/**
  * Remove expired entries from the buffer (garbage collection).
  *
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Number of entries removed
  */
 export function cleanupExpired(config: BufferConfig = DEFAULT_CONFIG): number {
-  const lockPath = config.bufferPath + '.lock';
-  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
-
-  try {
+  return withFileLock(config, () => {
     const allEntries = readBuffer(config);
     const now = new Date();
     const validEntries = allEntries.filter((entry) => new Date(entry.expires_at) > now);
     const removedCount = allEntries.length - validEntries.length;
 
     if (removedCount > 0) {
-      // Rewrite buffer with only valid entries
       fs.writeFileSync(config.bufferPath, toJsonlContent(validEntries), 'utf-8');
     }
 
     return removedCount;
-  } finally {
-    if (lockAcquired) {
-      releaseLock(lockPath);
-    }
-  }
+  });
 }
 
 /**
@@ -460,10 +469,7 @@ export function clearSession(
   sessionId: string,
   config: BufferConfig = DEFAULT_CONFIG
 ): number {
-  const lockPath = config.bufferPath + '.lock';
-  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
-
-  try {
+  return withFileLock(config, () => {
     const allEntries = readBuffer(config);
     const remaining = allEntries.filter((e) => e.session_id !== sessionId);
     const removedCount = allEntries.length - remaining.length;
@@ -473,11 +479,7 @@ export function clearSession(
     }
 
     return removedCount;
-  } finally {
-    if (lockAcquired) {
-      releaseLock(lockPath);
-    }
-  }
+  });
 }
 
 /**
@@ -491,10 +493,7 @@ export function clearAgents(
   agentIds: string[],
   config: BufferConfig = DEFAULT_CONFIG
 ): number {
-  const lockPath = config.bufferPath + '.lock';
-  const lockAcquired = acquireLock(lockPath, config.lockTimeoutMs ?? 5000);
-
-  try {
+  return withFileLock(config, () => {
     const allEntries = readBuffer(config);
     const remaining = allEntries.filter((e) => !agentIds.includes(e.agent_id));
     const removedCount = allEntries.length - remaining.length;
@@ -504,11 +503,7 @@ export function clearAgents(
     }
 
     return removedCount;
-  } finally {
-    if (lockAcquired) {
-      releaseLock(lockPath);
-    }
-  }
+  });
 }
 
 /**
