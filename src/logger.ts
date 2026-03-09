@@ -7,6 +7,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import type { AgentMetrics } from './types.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -59,14 +60,18 @@ export interface LogStats {
 let currentConfig: LoggerConfig = { ...DEFAULT_CONFIG };
 
 /**
- * Configure the logger
+ * Configure the logger with partial settings. Unspecified fields retain their current values.
+ *
+ * @param config - Partial configuration to merge with current settings
  */
 export function configureLogger(config: Partial<LoggerConfig>): void {
   currentConfig = { ...currentConfig, ...config };
 }
 
 /**
- * Get current logger configuration
+ * Get a copy of the current logger configuration.
+ *
+ * @returns A copy of the current LoggerConfig
  */
 export function getLoggerConfig(): LoggerConfig {
   return { ...currentConfig };
@@ -161,54 +166,57 @@ function writeLog(level: LogLevel, message: string, data?: Record<string, unknow
 }
 
 /**
- * Log at debug level
+ * Log a message at debug level.
+ *
+ * @param message - The log message
+ * @param data - Optional structured data to include
  */
 export function debug(message: string, data?: Record<string, unknown>): void {
   writeLog('debug', message, data);
 }
 
 /**
- * Log at info level
+ * Log a message at info level.
+ *
+ * @param message - The log message
+ * @param data - Optional structured data to include
  */
 export function info(message: string, data?: Record<string, unknown>): void {
   writeLog('info', message, data);
 }
 
 /**
- * Log at warn level
+ * Log a message at warn level.
+ *
+ * @param message - The log message
+ * @param data - Optional structured data to include
  */
 export function warn(message: string, data?: Record<string, unknown>): void {
   writeLog('warn', message, data);
 }
 
 /**
- * Log at error level
+ * Log a message at error level.
+ *
+ * @param message - The log message
+ * @param data - Optional structured data to include
  */
 export function error(message: string, data?: Record<string, unknown>): void {
   writeLog('error', message, data);
 }
 
 /**
- * Log metrics capture event
+ * Log a structured metrics capture event at info level.
+ *
+ * @param agentId - The agent ID that was captured
+ * @param sessionId - The session ID (truncated to 12 chars in output)
+ * @param metrics - Metrics data to log (model, duration, tokens, execution)
+ * @param options - Optional metadata (agent name, project path, source)
  */
 export function logMetricsCapture(
   agentId: string,
   sessionId: string,
-  metrics: {
-    model?: string;
-    duration_ms?: number;
-    tokens?: {
-      input: number;
-      output: number;
-      cache_creation: number;
-      cache_read: number;
-      total_effective: number;
-    };
-    execution?: {
-      tool_use_count: number;
-      error_count: number;
-    };
-  },
+  metrics: Pick<AgentMetrics, 'model' | 'duration_ms' | 'tokens' | 'execution'>,
   options?: {
     agentName?: string;
     projectPath?: string;
@@ -232,7 +240,10 @@ export function logMetricsCapture(
 }
 
 /**
- * Log buffer operation
+ * Log a buffer operation at debug level.
+ *
+ * @param operation - The buffer operation type
+ * @param details - Structured details about the operation
  */
 export function logBufferOperation(
   operation: 'append' | 'read' | 'query' | 'cleanup' | 'clear',
@@ -242,7 +253,10 @@ export function logBufferOperation(
 }
 
 /**
- * Read recent log entries
+ * Read the most recent log entries from the log file.
+ *
+ * @param lines - Number of lines to return (default: 50)
+ * @returns Array of log entry strings, or empty array if file doesn't exist
  */
 export function readRecentLogs(lines: number = 50): string[] {
   try {
@@ -259,7 +273,9 @@ export function readRecentLogs(lines: number = 50): string[] {
 }
 
 /**
- * Get log file statistics
+ * Get statistics about the current log file.
+ *
+ * @returns LogStats with file size, line count, timestamps, and rotation info
  */
 export function getLogStats(): LogStats {
   const stats: LogStats = {

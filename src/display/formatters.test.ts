@@ -191,10 +191,10 @@ describe('Display Formatters', () => {
     it('should calculate totals correctly', () => {
       const entries = [
         createMockBufferEntry({
-          metrics: createMockMetrics({ duration_ms: 60000, tokens: { ...createMockMetrics().tokens, total_effective: 1000 } }),
+          metrics: createMockMetrics({ duration_ms: 60000, tokens: { input: 500, output: 300, cache_creation: 200, cache_read: 0, total_effective: 1000, total_raw: 1000 } }),
         }),
         createMockBufferEntry({
-          metrics: createMockMetrics({ duration_ms: 120000, tokens: { ...createMockMetrics().tokens, total_effective: 2000 } }),
+          metrics: createMockMetrics({ duration_ms: 120000, tokens: { input: 1000, output: 600, cache_creation: 400, cache_read: 0, total_effective: 2000, total_raw: 2000 } }),
         }),
       ];
       const result = formatReport(entries);

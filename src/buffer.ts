@@ -374,7 +374,7 @@ export function queryBuffer(
     if (query.projectPath && entry.project_path !== query.projectPath) return false;
     if (query.since && new Date(entry.captured_at) < query.since) return false;
     // Filter by agent end_time (when the agent actually finished)
-    const endTime = entry.end_time || entry.metrics?.end_time;
+    const endTime = entry.end_time || entry.metrics.end_time;
     if (query.endTimeAfter && endTime && new Date(endTime) < query.endTimeAfter) return false;
     if (query.endTimeBefore && endTime && new Date(endTime) > query.endTimeBefore) return false;
     return true;
@@ -400,7 +400,7 @@ export function getLatestForSession(
     new Date(b.captured_at).getTime() - new Date(a.captured_at).getTime()
   );
 
-  return entries[0];
+  return entries[0] ?? null;
 }
 
 /**

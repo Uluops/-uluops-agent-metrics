@@ -3,13 +3,17 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Extract accurate metrics from Claude Code agent session files",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Uluops/-uluops-agent-metrics.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "agent-metrics": "dist/cli.js"
   },
   "scripts": {
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && tsc && chmod +x dist/cli.js",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "tsc -p tsconfig.test.json && node --test 'dist/*.test.js' 'dist/**/*.test.js'",

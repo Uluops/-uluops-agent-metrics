@@ -15,7 +15,10 @@ import { registerBufferCommands } from './commands/buffer.js';
 import { registerLogCommands } from './commands/log.js';
 
 const require = createRequire(import.meta.url);
-const { version } = require('../package.json') as { version: string };
+const pkg: unknown = require('../package.json');
+const version = (pkg && typeof pkg === 'object' && 'version' in pkg && typeof (pkg as Record<string, unknown>).version === 'string')
+  ? (pkg as { version: string }).version
+  : '0.0.0';
 
 const program = new Command();
 

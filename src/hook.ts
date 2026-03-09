@@ -194,11 +194,11 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
             : JSON.stringify(data.message.content);
         }
       } catch {
-        // Skip malformed lines
+        // Expected: transcript lines may be truncated or malformed; skip and continue
       }
     }
   } catch {
-    // Error reading file
+    // Expected: file may be locked or unreadable during agent execution; return null
   } finally {
     rl.close();
     fileStream.destroy();
