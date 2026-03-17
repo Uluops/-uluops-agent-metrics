@@ -1,7 +1,6 @@
 {
   "name": "@uluops/agent-metrics",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Extract accurate metrics from Claude Code agent session files",
   "repository": {
@@ -51,5 +50,8 @@
     "!dist/test-utils.*",
     "README.md",
     "CHANGELOG.md"
-  ]
+  ],
+  "publishConfig": {
+    "access": "restricted"
+  }
 }
