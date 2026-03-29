@@ -480,7 +480,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | Command | Description |
 |---------|-------------|
 | `status` | Show buffer statistics (alias for `buffer status`) |
-| `report [-n limit] [--current]` | Show recent auto-captured metrics in table format |
+| `report [-n limit] [-s session] [--current]` | Show recent auto-captured metrics in table format |
 | `list [-n <limit>]` | List recent agent runs from session files |
 | `extract <id> [-f format] [-a agent-name]` | Extract metrics for a specific agent |
 | `compare <id...>` | Compare multiple agents side-by-side |

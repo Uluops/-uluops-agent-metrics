@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { Command } from 'commander';
 import { registerCoreCommands } from './core.js';
+import { isValidAgentId } from '../hook.js';
 import { createAgentJSONL } from '../test-utils.js';
 
 // Test directory setup
@@ -179,18 +180,16 @@ describe('Core Commands', () => {
 
 describe('Agent ID Validation', () => {
   it('should accept valid lowercase hex IDs', () => {
-    // Valid IDs are lowercase hex strings
     const validIds = ['abc1234', 'def5678', 'a1b2c3d', '0000000'];
     for (const id of validIds) {
-      assert.ok(/^[a-f0-9]+$/.test(id), `${id} should be valid hex`);
+      assert.ok(isValidAgentId(id), `${id} should be valid`);
     }
   });
 
   it('should reject invalid agent IDs', () => {
-    // Invalid IDs contain non-hex characters
     const invalidIds = ['ABC1234', 'xyz1234', 'abc-123', 'abc 123', '', '!@#$%'];
     for (const id of invalidIds) {
-      assert.ok(!/^[a-f0-9]+$/.test(id) || id === '', `${id} should be invalid`);
+      assert.ok(!isValidAgentId(id), `${id} should be invalid`);
     }
   });
 });

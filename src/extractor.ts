@@ -241,14 +241,10 @@ export async function extractMultipleAgentMetrics(
   agentIds: string[],
   options: ExtractOptions = {}
 ): Promise<Map<string, AgentMetrics | null>> {
-  const results = new Map<string, AgentMetrics | null>();
-
-  for (const agentId of agentIds) {
-    const metrics = await extractAgentMetrics(agentId, options);
-    results.set(agentId, metrics);
-  }
-
-  return results;
+  const entries = await Promise.all(
+    agentIds.map(async (id) => [id, await extractAgentMetrics(id, options)] as const)
+  );
+  return new Map(entries);
 }
 
 /**

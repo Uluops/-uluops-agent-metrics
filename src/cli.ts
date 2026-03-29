@@ -64,6 +64,11 @@ BASIC COMMANDS
 BUFFER COMMANDS
 ──────────────────────────────────────────────────────────────────────────────
 
+  Show recent metrics (formatted table):
+    $ agent-metrics report
+    $ agent-metrics report --session ea588859-88cd-4511-851a-4fe928cd77c7
+    $ agent-metrics report --current
+
   Show buffer status:
     $ agent-metrics status
     $ agent-metrics buffer status

@@ -61,7 +61,7 @@ export function registerCoreCommands(program: Command): void {
           case 'summary':
             console.log(formatMetricsSummary(metrics));
             break;
-          case 'tracker':
+          case 'tracker': {
             // Auto-lookup agent name from buffer if not provided
             let agentName = options.agentName;
             if (!agentName) {
@@ -71,6 +71,7 @@ export function registerCoreCommands(program: Command): void {
             }
             console.log(JSON.stringify(toTrackerFormat(metrics, agentName), null, 2));
             break;
+          }
           case 'json':
             console.log(JSON.stringify(metrics, null, 2));
             break;
@@ -151,14 +152,12 @@ export function registerCoreCommands(program: Command): void {
     .option('-p, --project <path>', 'Project path to search in')
     .action(async (agentIds: string[], options: { project?: string }) => {
       try {
-        const items: CompareItem[] = [];
-
-        for (const agentId of agentIds) {
-          const metrics = await extractAgentMetrics(agentId, {
-            projectPath: options.project,
-          });
-          items.push({ agentId, metrics });
-        }
+        const items: CompareItem[] = await Promise.all(
+          agentIds.map(async (agentId) => ({
+            agentId,
+            metrics: await extractAgentMetrics(agentId, { projectPath: options.project }),
+          }))
+        );
 
         console.log(formatAgentCompare(items));
       } catch (error) {

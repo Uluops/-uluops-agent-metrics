@@ -20,6 +20,7 @@ import {
   clearSession,
   clearAgents,
   getBufferStats,
+  entriesToTrackerFormat,
   type BufferConfig,
 } from './buffer.js';
 import { configureLogger } from './logger.js';
@@ -620,6 +621,51 @@ describe('Buffer Module', () => {
 
       const allEntries = readBuffer(TEST_CONFIG);
       assert.strictEqual(allEntries.length, 1, 'Entry should exist in raw buffer');
+    });
+  });
+
+  describe('entriesToTrackerFormat', () => {
+    it('should map token fields correctly', () => {
+      const metrics = createTestMetrics({
+        model: 'claude-sonnet-4-5',
+        duration_ms: 5000,
+        tokens: {
+          input: 100,
+          output: 200,
+          cache_creation: 300,
+          cache_read: 400,
+          total_effective: 600,
+          total_raw: 1000,
+        },
+      });
+      const entry = appendToBuffer(metrics, {
+        agentName: 'code-validator',
+        config: TEST_CONFIG,
+      });
+
+      const result = entriesToTrackerFormat([entry]);
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].name, 'code-validator');
+      assert.strictEqual(result[0].model, 'claude-sonnet-4-5');
+      assert.strictEqual(result[0].duration_ms, 5000);
+      assert.strictEqual(result[0].tokens.input_tokens, 100);
+      assert.strictEqual(result[0].tokens.output_tokens, 200);
+      assert.strictEqual(result[0].tokens.cache_creation_tokens, 300);
+      assert.strictEqual(result[0].tokens.cache_read_tokens, 400);
+      assert.strictEqual(result[0].tokens.total_effective_tokens, 600);
+    });
+
+    it('should use "unknown" for missing agent name', () => {
+      const metrics = createTestMetrics();
+      const entry = appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      const result = entriesToTrackerFormat([entry]);
+      assert.strictEqual(result[0].name, 'unknown');
+    });
+
+    it('should handle empty array', () => {
+      const result = entriesToTrackerFormat([]);
+      assert.deepStrictEqual(result, []);
     });
   });
 });

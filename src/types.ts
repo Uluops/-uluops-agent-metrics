@@ -176,8 +176,6 @@ export type BufferFormat = 'table' | 'json' | 'tracker';
 export interface ExtractOptions {
   /** Override project path (auto-detected if not provided) */
   projectPath?: string;
-  /** Format for output */
-  format?: 'json' | 'summary';
 }
 
 /**

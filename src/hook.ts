@@ -40,6 +40,24 @@ interface HookInput {
   stop_hook_active?: boolean;
 }
 
+/**
+ * Parse and validate hook input from stdin.
+ * Returns a Partial<HookInput> — callers must handle missing fields.
+ */
+export function parseHookInput(parsed: unknown): Partial<HookInput> {
+  if (!parsed || typeof parsed !== 'object') return {};
+  const obj = parsed as Record<string, unknown>;
+  const result: Partial<HookInput> = {};
+
+  if (typeof obj.session_id === 'string') result.session_id = obj.session_id;
+  if (typeof obj.cwd === 'string') result.cwd = obj.cwd;
+  if (typeof obj.transcript_path === 'string') result.transcript_path = obj.transcript_path;
+  if (typeof obj.agent_transcript_path === 'string') result.agent_transcript_path = obj.agent_transcript_path;
+  if (typeof obj.agent_id === 'string') result.agent_id = obj.agent_id;
+
+  return result;
+}
+
 interface HookOutput {
   decision: 'approve' | 'block';
   reason?: string;
@@ -256,7 +274,7 @@ export async function detectAgentName(transcriptPath: string): Promise<string | 
 /**
  * Main hook handler
  */
-async function handleHook(input: HookInput): Promise<HookOutput> {
+async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
   try {
     // Use agent_transcript_path (new field) or fall back to transcript_path
     const transcriptPath = input.agent_transcript_path || input.transcript_path;
@@ -376,7 +394,7 @@ async function main(): Promise<void> {
     // Read input from stdin
     const inputData = await readStdin();
     const parsed: unknown = JSON.parse(inputData || '{}');
-    const input: HookInput = (parsed && typeof parsed === 'object') ? parsed as HookInput : {} as HookInput;
+    const input = parseHookInput(parsed);
 
     // Handle the hook
     const output = await handleHook(input);

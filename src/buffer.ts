@@ -344,24 +344,39 @@ export function getAllForSession(
 }
 
 /**
+ * Remove buffer entries matching a predicate, under file lock.
+ * Reads all entries, keeps those where `keep` returns true, writes back.
+ *
+ * @param keep - Predicate: return true to keep the entry, false to remove it
+ * @param config - Buffer configuration
+ * @returns Number of entries removed
+ */
+function removeWhere(
+  keep: (entry: BufferEntry) => boolean,
+  config: BufferConfig = DEFAULT_CONFIG,
+): number {
+  return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
+    const allEntries = readBuffer(config);
+    const remaining = allEntries.filter(keep);
+    const removedCount = allEntries.length - remaining.length;
+
+    if (removedCount > 0) {
+      fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
+    }
+
+    return removedCount;
+  });
+}
+
+/**
  * Remove expired entries from the buffer (garbage collection).
  *
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Number of entries removed
  */
 export function cleanupExpired(config: BufferConfig = DEFAULT_CONFIG): number {
-  return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
-    const allEntries = readBuffer(config);
-    const now = new Date();
-    const validEntries = allEntries.filter((entry) => new Date(entry.expires_at) > now);
-    const removedCount = allEntries.length - validEntries.length;
-
-    if (removedCount > 0) {
-      fs.writeFileSync(config.bufferPath, toJsonlContent(validEntries), 'utf-8');
-    }
-
-    return removedCount;
-  });
+  const now = new Date();
+  return removeWhere((entry) => new Date(entry.expires_at) > now, config);
 }
 
 /**
@@ -375,17 +390,7 @@ export function clearSession(
   sessionId: string,
   config: BufferConfig = DEFAULT_CONFIG
 ): number {
-  return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
-    const allEntries = readBuffer(config);
-    const remaining = allEntries.filter((e) => e.session_id !== sessionId);
-    const removedCount = allEntries.length - remaining.length;
-
-    if (removedCount > 0) {
-      fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
-    }
-
-    return removedCount;
-  });
+  return removeWhere((entry) => entry.session_id !== sessionId, config);
 }
 
 /**
@@ -399,17 +404,7 @@ export function clearAgents(
   agentIds: string[],
   config: BufferConfig = DEFAULT_CONFIG
 ): number {
-  return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
-    const allEntries = readBuffer(config);
-    const remaining = allEntries.filter((e) => !agentIds.includes(e.agent_id));
-    const removedCount = allEntries.length - remaining.length;
-
-    if (removedCount > 0) {
-      fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
-    }
-
-    return removedCount;
-  });
+  return removeWhere((entry) => !agentIds.includes(entry.agent_id), config);
 }
 
 /**

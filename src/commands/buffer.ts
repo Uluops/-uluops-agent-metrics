@@ -21,6 +21,28 @@ import {
 import type { BufferFormat } from '../types.js';
 
 /**
+ * Parse a duration string like "30m" or "2h" into a Date relative to now.
+ * Returns undefined if the string doesn't match the expected format.
+ */
+function parseSinceDuration(raw: string): Date | null {
+  const match = raw.match(/^(\d+)(m|h)$/);
+  if (!match) return null;
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  const ms = unit === 'h' ? value * 60 * 60 * 1000 : value * 60 * 1000;
+  return new Date(Date.now() - ms);
+}
+
+/**
+ * Parse an ISO 8601 date string and validate it.
+ * Returns the Date or null if invalid.
+ */
+function parseIsoDate(raw: string): Date | null {
+  const date = new Date(raw);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+/**
  * Register buffer commands on the program.
  */
 export function registerBufferCommands(program: Command): void {
@@ -61,34 +83,32 @@ export function registerBufferCommands(program: Command): void {
       // Parse --since duration
       let sinceDate: Date | undefined;
       if (options.since) {
-        const match = options.since.match(/^(\d+)(m|h)$/);
-        if (match) {
-          const value = parseInt(match[1], 10);
-          const unit = match[2];
-          const ms = unit === 'h' ? value * 60 * 60 * 1000 : value * 60 * 1000;
-          sinceDate = new Date(Date.now() - ms);
-        } else {
+        const parsed = parseSinceDuration(options.since);
+        if (!parsed) {
           console.error(`Invalid --since format: '${options.since}'. Use a number followed by 'm' (minutes) or 'h' (hours). Examples: 30m, 2h`);
           process.exit(1);
         }
+        sinceDate = parsed;
       }
 
       // Parse --end-after and --end-before ISO dates
       let endTimeAfter: Date | undefined;
       let endTimeBefore: Date | undefined;
       if (options.endAfter) {
-        endTimeAfter = new Date(options.endAfter);
-        if (isNaN(endTimeAfter.getTime())) {
+        const parsed = parseIsoDate(options.endAfter);
+        if (!parsed) {
           console.error('Invalid --end-after format. Use ISO 8601 format (e.g., 2026-01-14T04:00:00Z)');
           process.exit(1);
         }
+        endTimeAfter = parsed;
       }
       if (options.endBefore) {
-        endTimeBefore = new Date(options.endBefore);
-        if (isNaN(endTimeBefore.getTime())) {
+        const parsed = parseIsoDate(options.endBefore);
+        if (!parsed) {
           console.error('Invalid --end-before format. Use ISO 8601 format (e.g., 2026-01-14T05:00:00Z)');
           process.exit(1);
         }
+        endTimeBefore = parsed;
       }
 
       let entries = queryBuffer({
@@ -149,7 +169,7 @@ export function registerBufferCommands(program: Command): void {
     .command('clear')
     .description('Clear buffer entries')
     .option('-s, --session <id>', 'Clear entries for a specific session')
-    .option('-a, --agents <ids...>', 'Clear specific agent IDs')
+    .option('--agents <ids...>', 'Clear specific agent IDs')
     .option('--expired', 'Clear only expired entries (garbage collect)')
     .action((options: { session?: string; agents?: string[]; expired?: boolean }) => {
       if (options.expired) {

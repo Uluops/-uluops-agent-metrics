@@ -152,7 +152,7 @@ describe('Buffer Commands', () => {
     });
 
     it('should accept --agents option', async () => {
-      await program.parseAsync(['node', 'test', 'buffer', 'clear', '-a', 'abc1234', 'def5678']);
+      await program.parseAsync(['node', 'test', 'buffer', 'clear', '--agents', 'abc1234', 'def5678']);
 
       const textOutput = output.join('\n');
       assert.ok(textOutput.includes('Cleared'), 'Should report cleared');
