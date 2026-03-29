@@ -26,6 +26,43 @@ export function sanitizePathAsFolderName(dirPath: string): string {
 }
 
 /**
+ * Search for an agent file within a project directory.
+ * Checks both the flat layout (legacy) and the session/subagents layout (current).
+ *
+ * @param projectDir - The project directory to search in
+ * @param filename - The agent filename (e.g., "agent-abc123.jsonl")
+ * @returns Location of the agent file, or null if not found
+ */
+function findAgentFileInProject(
+  projectDir: string,
+  filename: string
+): AgentFileLocation | null {
+  if (!fs.existsSync(projectDir)) return null;
+
+  // Check flat layout: {projectDir}/agent-{id}.jsonl (legacy)
+  const flatPath = path.join(projectDir, filename);
+  if (fs.existsSync(flatPath)) {
+    return { filePath: flatPath, projectDir };
+  }
+
+  // Check session/subagents layout: {projectDir}/{session-uuid}/subagents/agent-{id}.jsonl
+  try {
+    const entries = fs.readdirSync(projectDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const subagentsPath = path.join(projectDir, entry.name, 'subagents', filename);
+      if (fs.existsSync(subagentsPath)) {
+        return { filePath: subagentsPath, projectDir };
+      }
+    }
+  } catch {
+    // Permission or read error — skip silently
+  }
+
+  return null;
+}
+
+/**
  * Find an agent file by ID, optionally within a specific project
  *
  * @param agentId - The agent ID (e.g., "ac51171")
@@ -46,11 +83,8 @@ export function findAgentFile(
   if (projectPath) {
     const projectFolder = sanitizePathAsFolderName(path.resolve(projectPath));
     const projectDir = path.join(projectsDir, projectFolder);
-    const filePath = path.join(projectDir, filename);
-
-    if (fs.existsSync(filePath)) {
-      return { filePath, projectDir };
-    }
+    const result = findAgentFileInProject(projectDir, filename);
+    if (result) return result;
   }
 
   // Search all project directories
@@ -64,11 +98,8 @@ export function findAgentFile(
     if (!folder.isDirectory()) continue;
 
     const projectDir = path.join(projectsDir, folder.name);
-    const filePath = path.join(projectDir, filename);
-
-    if (fs.existsSync(filePath)) {
-      return { filePath, projectDir };
-    }
+    const result = findAgentFileInProject(projectDir, filename);
+    if (result) return result;
   }
 
   return null;
@@ -107,19 +138,42 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
   const scanResults = await Promise.allSettled(
     directories.map(async (folder) => {
       const projectDir = path.join(projectsDir, folder.name);
-      const files = await fs.promises.readdir(projectDir);
 
       const agentFiles: Array<AgentFileLocation & { mtime: number }> = [];
 
-      // Get stats for agent files in parallel within each project
+      // Collect agent file paths from both layouts
+      const candidateFiles: Array<{ filePath: string; projectDir: string }> = [];
+
+      const entries = await fs.promises.readdir(projectDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        // Flat layout (legacy): agent-{id}.jsonl directly in project dir
+        if (!entry.isDirectory() && entry.name.startsWith('agent-') && entry.name.endsWith('.jsonl')) {
+          candidateFiles.push({ filePath: path.join(projectDir, entry.name), projectDir });
+        }
+
+        // Session/subagents layout: {session-uuid}/subagents/agent-{id}.jsonl
+        if (entry.isDirectory()) {
+          const subagentsDir = path.join(projectDir, entry.name, 'subagents');
+          try {
+            const subFiles = await fs.promises.readdir(subagentsDir);
+            for (const subFile of subFiles) {
+              if (subFile.startsWith('agent-') && subFile.endsWith('.jsonl')) {
+                candidateFiles.push({ filePath: path.join(subagentsDir, subFile), projectDir });
+              }
+            }
+          } catch {
+            // subagents dir doesn't exist or isn't readable — skip
+          }
+        }
+      }
+
+      // Get stats for all candidate files in parallel
       const statResults = await Promise.allSettled(
-        files
-          .filter((file) => file.startsWith('agent-') && file.endsWith('.jsonl'))
-          .map(async (file) => {
-            const filePath = path.join(projectDir, file);
-            const stats = await fs.promises.stat(filePath);
-            return { filePath, projectDir, mtime: stats.mtimeMs };
-          })
+        candidateFiles.map(async ({ filePath, projectDir: pDir }) => {
+          const stats = await fs.promises.stat(filePath);
+          return { filePath, projectDir: pDir, mtime: stats.mtimeMs };
+        })
       );
 
       for (const result of statResults) {

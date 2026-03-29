@@ -28,11 +28,16 @@ export type { TrackerTokens, TrackerFormat } from './extractor.js';
 export {
   findAgentFile,
   findRecentAgentFiles,
+  getClaudeProjectsDir,
+  sanitizePathAsFolderName,
+  getProjectName,
+  extractAgentIdFromFilename,
+  parseTimestamp,
+  calculateDuration,
   formatDuration,
   formatTokens,
   formatNumber,
   formatModelName,
-  getProjectName,
 } from './utils.js';
 
 // Types

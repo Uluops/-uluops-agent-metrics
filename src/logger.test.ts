@@ -403,10 +403,13 @@ describe('Logger Module', () => {
             cache_creation: 2000,
             cache_read: 3000,
             total_effective: 3500,
+            total_raw: 6500,
           },
           execution: {
+            message_count: 10,
             tool_use_count: 5,
             error_count: 0,
+            tool_breakdown: {},
           },
         },
         {
@@ -424,7 +427,7 @@ describe('Logger Module', () => {
     });
 
     it('should truncate session ID', () => {
-      logMetricsCapture('agent123', 'very-long-session-id-that-should-be-truncated', {});
+      logMetricsCapture('agent123', 'very-long-session-id-that-should-be-truncated', {} as Pick<import('./types.js').AgentMetrics, 'model' | 'duration_ms' | 'tokens' | 'execution'>);
 
       const logs = readRecentLogs(1);
       assert.ok(logs[0].includes('very-long-se...'));

@@ -47,6 +47,7 @@ export function registerCoreCommands(program: Command): void {
 
         if (!metrics) {
           console.error(`Agent file not found for ID: ${agentId}`);
+          console.error('Run "agent-metrics list" to see available agent IDs.');
           process.exit(1);
         }
 
@@ -130,6 +131,7 @@ export function registerCoreCommands(program: Command): void {
 
       if (!location) {
         console.error(`Agent file not found for ID: ${agentId}`);
+        console.error('Run "agent-metrics list" to see available agent IDs.');
         process.exit(1);
       }
 

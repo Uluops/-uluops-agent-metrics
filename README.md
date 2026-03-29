@@ -18,14 +18,14 @@ Claude Code stores detailed execution data for every agent (Task tool) invocatio
 Install globally to use `agent-metrics` from any directory:
 
 ```bash
-cd packages/agent-metrics
+cd packages/-uluops-agent-metrics
 ./install.sh
 ```
 
 Or manually:
 
 ```bash
-cd packages/agent-metrics
+cd packages/-uluops-agent-metrics
 npm install
 npm run build
 npm link
@@ -43,7 +43,7 @@ agent-metrics list
 For project-specific use:
 
 ```bash
-cd packages/agent-metrics
+cd packages/-uluops-agent-metrics
 npm install
 npm run build
 node dist/index.js list
@@ -237,7 +237,14 @@ Ready for `save_run`:
 
 ## Programmatic Usage
 
-> **Note:** The package is not yet published to npm. For programmatic imports, run `npm link` in this directory first, then `npm link @uluops/agent-metrics` in your project.
+> **Note:** The package is not yet published to npm. For programmatic imports:
+> 1. Run `npm link` in this package directory to create the global symlink
+> 2. Run `npm link @uluops/agent-metrics` in your consuming project to resolve the package
+>
+> Alternatively, add a `file:` dependency in your project's `package.json`:
+> ```json
+> "@uluops/agent-metrics": "file:../packages/-uluops-agent-metrics"
+> ```
 
 ### Core Extraction Functions
 
@@ -327,14 +334,19 @@ const clearedCount = clearSession('ea588859-...');
 import {
   findAgentFile,
   findRecentAgentFiles,
+  getClaudeProjectsDir,
+  sanitizePathAsFolderName,
+  getProjectName,
+  extractAgentIdFromFilename,
+  parseTimestamp,
+  calculateDuration,
   formatDuration,
   formatTokens,
   formatNumber,
   formatModelName,
-  getProjectName,
 } from '@uluops/agent-metrics';
 
-// Find agent file location
+// Find agent file location (searches flat and session/subagents layouts)
 const location = findAgentFile('a80e24f');
 if (location) {
   console.log(`Path: ${location.filePath}`);
@@ -342,7 +354,22 @@ if (location) {
 }
 
 // Find recent agent files across all projects
-const recentFiles = findRecentAgentFiles(20); // Last 20
+const recentFiles = await findRecentAgentFiles(20); // Last 20
+
+// Path utilities — work with Claude Code's project directory conventions
+const projectsDir = getClaudeProjectsDir();           // ~/.claude/projects
+const folder = sanitizePathAsFolderName('/Users/me/myproject'); // "-Users-me-myproject"
+const name = getProjectName('/path/to/-Users-me-myproject');    // "myproject"
+
+// Agent ID extraction from filenames
+const id = extractAgentIdFromFilename('agent-a80e24f.jsonl'); // "a80e24f"
+
+// Timestamp utilities
+const date = parseTimestamp('2026-03-29T06:21:53.455Z'); // Date object
+const durationMs = calculateDuration(
+  '2026-03-29T06:21:53.455Z',
+  '2026-03-29T06:25:12.000Z'
+); // 198545
 
 // Formatting utilities
 console.log(formatDuration(113126));   // "1m 53s"
@@ -418,9 +445,14 @@ import type {
   // Buffer types
   BufferEntry,
   BufferConfig,
+  BufferStats,
+  // Format types
+  ExtractFormat,
+  BufferFormat,
   // Logger types
   LogLevel,
   LoggerConfig,
+  LogStats,
 } from '@uluops/agent-metrics';
 ```
 
@@ -428,7 +460,7 @@ import type {
 
 Agent session files are stored at:
 ```
-~/.claude/projects/{project-folder}/agent-{id}.jsonl
+~/.claude/projects/{project-folder}/{session-uuid}/subagents/agent-{id}.jsonl
 ```
 
 Each JSONL file contains all messages from an agent invocation, including:
@@ -456,7 +488,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | Command | Description |
 |---------|-------------|
 | `buffer status` | Show buffer statistics |
-| `buffer list [-s session] [-a agent-name] [--since duration] [-f format]` | List buffered entries |
+| `buffer list [-s session] [--agent-name name] [--since duration] [--end-after iso] [--end-before iso] [-p project] [-a] [-f format]` | List buffered entries |
 | `buffer session <id> [-f format]` | Get all entries for a session |
 | `buffer clear --session <id>` | Clear entries for a session |
 | `buffer clear --agents <id...>` | Clear specific agent IDs |

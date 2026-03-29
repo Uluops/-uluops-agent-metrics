@@ -310,7 +310,7 @@ export function formatAgentCompare(items: CompareItem[]): string {
 /**
  * Log statistics for formatting
  */
-export interface LogStats {
+export interface LogDisplayStats {
   logPath: string;
   enabled: boolean;
   minLevel: string;
@@ -330,7 +330,7 @@ export interface LogStats {
  * @param stats - Log statistics to format
  * @returns Formatted string
  */
-export function formatLogStatus(stats: LogStats): string {
+export function formatLogStatus(stats: LogDisplayStats): string {
   const lines: string[] = [];
 
   lines.push('Agent Metrics Log Status');

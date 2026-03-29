@@ -21,7 +21,7 @@ import {
   formatLogStatus,
   type AgentListItem,
   type CompareItem,
-  type LogStats,
+  type LogDisplayStats,
 } from './formatters.js';
 import type { BufferEntry } from '../buffer.js';
 import type { AgentMetrics } from '../types.js';
@@ -275,7 +275,7 @@ describe('Display Formatters', () => {
 
   describe('formatLogStatus', () => {
     it('should format log status for existing file', () => {
-      const stats: LogStats = {
+      const stats: LogDisplayStats = {
         logPath: '/home/user/.claude/agent-metrics.log',
         enabled: true,
         minLevel: 'info',
@@ -302,7 +302,7 @@ describe('Display Formatters', () => {
     });
 
     it('should format log status for non-existent file', () => {
-      const stats: LogStats = {
+      const stats: LogDisplayStats = {
         logPath: '/home/user/.claude/agent-metrics.log',
         enabled: false,
         minLevel: 'warn',

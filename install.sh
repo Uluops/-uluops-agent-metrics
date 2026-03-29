@@ -15,7 +15,7 @@ CLAUDE_TOOLS_DIR="$HOME/.claude/tools/agent-metrics"
 case "$1" in
   --unlink)
     echo "Removing global agent-metrics link..."
-    npm unlink -g @claude-workflows/agent-metrics 2>/dev/null || true
+    npm unlink -g @uluops/agent-metrics 2>/dev/null || true
     echo "✓ Unlinked"
     exit 0
     ;;
