@@ -33,7 +33,7 @@ export function registerStatusCommands(program: Command): void {
       if (options.current) {
         // Get the most recent session ID
         if (entries.length > 0) {
-          const currentSession = entries[entries.length - 1].session_id;
+          const currentSession = entries[entries.length - 1]!.session_id;
           entries = entries.filter(e => e.session_id === currentSession);
         }
       } else if (options.session) {

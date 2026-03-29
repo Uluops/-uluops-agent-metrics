@@ -128,6 +128,11 @@ function ensureBufferDir(config: BufferConfig = DEFAULT_CONFIG): void {
   }
 }
 
+/** Check if a buffer entry has expired relative to a given time */
+function isExpired(entry: BufferEntry, now: Date): boolean {
+  return new Date(entry.expires_at) <= now;
+}
+
 
 /**
  * Append a metrics entry to the buffer.
@@ -253,9 +258,7 @@ export function readBuffer(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[]
  */
 export function readValidEntries(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[] {
   const now = new Date();
-  return readBuffer(config).filter(
-    (entry) => new Date(entry.expires_at) > now
-  );
+  return readBuffer(config).filter((entry) => !isExpired(entry, now));
 }
 
 /**
@@ -318,12 +321,10 @@ export function getLatestForSession(
   const entries = queryBuffer({ sessionId }, config);
   if (entries.length === 0) return null;
 
-  // Sort by captured_at descending
-  entries.sort((a, b) =>
-    new Date(b.captured_at).getTime() - new Date(a.captured_at).getTime()
+  // Single-pass max by captured_at — O(n) instead of O(n log n) sort
+  return entries.reduce((latest, entry) =>
+    entry.captured_at > latest.captured_at ? entry : latest
   );
-
-  return entries[0] ?? null;
 }
 
 /**
@@ -376,7 +377,7 @@ function removeWhere(
  */
 export function cleanupExpired(config: BufferConfig = DEFAULT_CONFIG): number {
   const now = new Date();
-  return removeWhere((entry) => new Date(entry.expires_at) > now, config);
+  return removeWhere((entry) => !isExpired(entry, now), config);
 }
 
 /**
@@ -428,7 +429,7 @@ export function getBufferStats(config: BufferConfig = DEFAULT_CONFIG): BufferSta
     sessions.add(entry.session_id);
     agents.add(entry.agent_id);
 
-    if (new Date(entry.expires_at) > now) {
+    if (!isExpired(entry, now)) {
       validCount++;
     }
 

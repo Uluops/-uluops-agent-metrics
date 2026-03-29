@@ -151,17 +151,23 @@ function processMessage(acc: MetricsAccumulator, message: RawAgentMessage): void
   }
 }
 
-/** Build the final AgentMetrics object from a completed accumulator */
+/**
+ * Build the final AgentMetrics object from a completed accumulator.
+ * @precondition acc.firstMessage and acc.lastMessage must be non-null (caller validates)
+ */
 function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
-  const first = acc.firstMessage!;
-  const last = acc.lastMessage!;
+  if (!acc.firstMessage || !acc.lastMessage) {
+    throw new Error('buildMetrics called with empty accumulator — no messages were processed');
+  }
+  const first = acc.firstMessage;
+  const last = acc.lastMessage;
   const durationMs = calculateDuration(first.timestamp, last.timestamp);
 
   return {
     agent_id: first.agentId,
     session_id: first.sessionId,
     slug: first.slug,
-    model: acc.models.size > 0 ? Array.from(acc.models)[0] : 'unknown',
+    model: acc.models.size > 0 ? acc.models.values().next().value! : 'unknown',
     git_branch: first.gitBranch,
     cwd: first.cwd,
     claude_code_version: first.version,

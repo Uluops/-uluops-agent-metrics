@@ -9,10 +9,9 @@ import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { Command } from 'commander';
 import { registerCoreCommands } from './core.js';
 import { isValidAgentId } from '../hook.js';
-import { createAgentJSONL } from '../test-utils.js';
+import { createAgentJSONL, createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
 
 // Test directory setup
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-cli-test-' + Date.now());
@@ -20,19 +19,13 @@ const PROJECTS_DIR = path.join(TEST_DIR, '.claude', 'projects');
 const PROJECT_DIR = path.join(PROJECTS_DIR, '-test-project');
 
 describe('Core Commands', () => {
-  let program: Command;
-  let output: string[];
-  let exitCode: number | null;
-  const originalConsoleLog = console.log;
-  const originalConsoleError = console.error;
-  const originalProcessExit = process.exit;
+  let harness: CommandTestHarness;
+  let program: CommandTestHarness['program'];
+  let output: CommandTestHarness['output'];
   const originalEnv = { ...process.env };
 
   before(() => {
-    // Create test directories
     fs.mkdirSync(PROJECT_DIR, { recursive: true });
-
-    // Create sample agent files
     fs.writeFileSync(
       path.join(PROJECT_DIR, 'agent-abc1234.jsonl'),
       createAgentJSONL('abc1234', 'session-1')
@@ -41,41 +34,23 @@ describe('Core Commands', () => {
       path.join(PROJECT_DIR, 'agent-def5678.jsonl'),
       createAgentJSONL('def5678', 'session-2')
     );
-
-    // Set HOME to test directory for file discovery
     process.env.HOME = TEST_DIR;
   });
 
   after(() => {
-    // Cleanup
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
     process.env = originalEnv;
   });
 
   beforeEach(() => {
-    // Reset program and output capture
-    program = new Command();
-    program.exitOverride(); // Prevent actual exit
-    output = [];
-    exitCode = null;
-
-    // Capture console output
-    console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
-    console.error = (...args: unknown[]) => output.push(args.map(String).join(' '));
-
-    // Capture exit code
-    (process.exit as unknown) = (code: number) => {
-      exitCode = code;
-      throw new Error(`EXIT:${code}`);
-    };
-
+    harness = createCommandTestHarness();
+    program = harness.program;
+    output = harness.output;
     registerCoreCommands(program);
   });
 
   afterEach(() => {
-    console.log = originalConsoleLog;
-    console.error = originalConsoleError;
-    (process.exit as unknown) = originalProcessExit;
+    harness.restore();
   });
 
   describe('extract command', () => {
@@ -109,7 +84,7 @@ describe('Core Commands', () => {
         assert.fail('Should have thrown');
       } catch (err) {
         assert.ok(output.some(o => o.includes('not found')), 'Should report agent not found');
-        assert.strictEqual(exitCode, 1, 'Should exit with code 1');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1');
       }
     });
 
@@ -118,7 +93,7 @@ describe('Core Commands', () => {
         await program.parseAsync(['node', 'test', 'extract', 'INVALID!@#']);
         assert.fail('Should have thrown');
       } catch (err) {
-        assert.strictEqual(exitCode, 1, 'Should exit with code 1 for invalid ID');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1 for invalid ID');
       }
     });
   });
@@ -154,7 +129,7 @@ describe('Core Commands', () => {
         await program.parseAsync(['node', 'test', 'find', 'nonexistent']);
         assert.fail('Should have thrown');
       } catch (err) {
-        assert.strictEqual(exitCode, 1, 'Should exit with code 1');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1');
       }
     });
   });

@@ -158,7 +158,7 @@ export function isValidAgentId(agentId: string): boolean {
 export function extractAgentIdFromPath(transcriptPath: string): string | null {
   const filename = path.basename(transcriptPath);
   const match = filename.match(/^agent-([a-f0-9]+)\.jsonl$/);
-  return match ? match[1] : null;
+  return match?.[1] ?? null;
 }
 
 /**
@@ -243,7 +243,7 @@ export const EXPLICIT_AGENT_TAG_PATTERN = /\[(?:agent|validator):([a-z][a-z0-9-]
  */
 export function extractExplicitAgentTag(content: string): string | null {
   const match = content.match(EXPLICIT_AGENT_TAG_PATTERN);
-  return match ? match[1].toLowerCase() : null;
+  return match?.[1]?.toLowerCase() ?? null;
 }
 
 /**

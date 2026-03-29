@@ -310,7 +310,7 @@ export function calculateDuration(start: string, end: string): number {
  */
 export function extractAgentIdFromFilename(filename: string): string | null {
   const match = filename.match(/^agent-([a-f0-9]+)\.jsonl$/);
-  return match ? match[1] : null;
+  return match?.[1] ?? null;
 }
 
 /**
@@ -329,7 +329,7 @@ export function getProjectName(projectDir: string): string {
   const skipPrefixes = ['home', 'users', 'user'];
   let startIndex = 0;
   for (let i = 0; i < segments.length; i++) {
-    if (skipPrefixes.includes(segments[i].toLowerCase())) {
+    if (skipPrefixes.includes(segments[i]!.toLowerCase())) {
       startIndex = i + 1;
     } else {
       break;

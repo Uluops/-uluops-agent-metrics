@@ -5,6 +5,7 @@
  * Centralizes test data creation to ensure consistency and reduce duplication.
  */
 
+import { Command } from 'commander';
 import type { AgentMetrics } from './types.js';
 
 // ============================================================================
@@ -152,3 +153,49 @@ export const BASE_MESSAGE = {
   gitBranch: 'main',
   slug: 'test-session',
 } as const;
+
+// ============================================================================
+// CLI Test Harness
+// ============================================================================
+
+export interface CommandTestHarness {
+  program: Command;
+  output: string[];
+  exitCode: number | null;
+  restore: () => void;
+}
+
+/**
+ * Create a test harness for CLI command testing.
+ * Captures console.log, console.error, and process.exit.
+ * Call restore() in afterEach to clean up.
+ */
+export function createCommandTestHarness(): CommandTestHarness {
+  const program = new Command();
+  program.exitOverride();
+
+  // Use an object so mutations from the captured process.exit propagate
+  const harness: CommandTestHarness = {
+    program,
+    output: [],
+    exitCode: null,
+    restore: () => {
+      console.log = originalConsoleLog;
+      console.error = originalConsoleError;
+      (process.exit as unknown) = originalProcessExit;
+    },
+  };
+
+  const originalConsoleLog = console.log;
+  const originalConsoleError = console.error;
+  const originalProcessExit = process.exit;
+
+  console.log = (...args: unknown[]) => harness.output.push(args.map(String).join(' '));
+  console.error = (...args: unknown[]) => harness.output.push(args.map(String).join(' '));
+  (process.exit as unknown) = (code: number) => {
+    harness.exitCode = code;
+    throw new Error(`EXIT:${code}`);
+  };
+
+  return harness;
+}

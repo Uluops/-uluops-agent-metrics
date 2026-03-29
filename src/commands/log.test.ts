@@ -9,25 +9,21 @@ import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { Command } from 'commander';
 import { registerLogCommands } from './log.js';
 import { configureLogger, info } from '../logger.js';
+import { createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
 
 // Test directory setup
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-log-cmd-test-' + Date.now());
 const LOG_PATH = path.join(TEST_DIR, 'test.log');
 
 describe('Log Commands', () => {
-  let program: Command;
-  let output: string[];
-  let exitCode: number | null;
-  const originalConsoleLog = console.log;
-  const originalConsoleError = console.error;
-  const originalProcessExit = process.exit;
+  let harness: CommandTestHarness;
+  let program: CommandTestHarness['program'];
+  let output: CommandTestHarness['output'];
 
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
-    // Configure logger to use test path
     configureLogger({ logPath: LOG_PATH, enabled: true });
   });
 
@@ -40,7 +36,6 @@ describe('Log Commands', () => {
     if (fs.existsSync(LOG_PATH)) {
       fs.unlinkSync(LOG_PATH);
     }
-    // Also clear rotated files
     for (let i = 1; i <= 3; i++) {
       const rotatedPath = `${LOG_PATH}.${i}`;
       if (fs.existsSync(rotatedPath)) {
@@ -48,29 +43,14 @@ describe('Log Commands', () => {
       }
     }
 
-    // Reset program and output capture
-    program = new Command();
-    program.exitOverride();
-    output = [];
-    exitCode = null;
-
-    // Capture console output
-    console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
-    console.error = (...args: unknown[]) => output.push(args.map(String).join(' '));
-
-    // Capture exit code
-    (process.exit as unknown) = (code: number) => {
-      exitCode = code;
-      throw new Error(`EXIT:${code}`);
-    };
-
+    harness = createCommandTestHarness();
+    program = harness.program;
+    output = harness.output;
     registerLogCommands(program);
   });
 
   afterEach(() => {
-    console.log = originalConsoleLog;
-    console.error = originalConsoleError;
-    (process.exit as unknown) = originalProcessExit;
+    harness.restore();
   });
 
   describe('log status command', () => {

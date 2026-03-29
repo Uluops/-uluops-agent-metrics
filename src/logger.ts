@@ -299,8 +299,8 @@ export function getLogStats(): LogStats {
       if (lines.length > 0) {
         // Extract timestamp from first and last lines
         const timestampRegex = /^\[([^\]]+)\]/;
-        const firstMatch = lines[0].match(timestampRegex);
-        const lastMatch = lines[lines.length - 1].match(timestampRegex);
+        const firstMatch = lines[0]?.match(timestampRegex);
+        const lastMatch = lines[lines.length - 1]?.match(timestampRegex);
         stats.oldestEntry = firstMatch?.[1] || null;
         stats.newestEntry = lastMatch?.[1] || null;
       }

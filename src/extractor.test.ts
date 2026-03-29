@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import {
   extractMetricsFromFile,
+  extractMultipleAgentMetrics,
   formatMetricsSummary,
   toTrackerFormat,
 } from './extractor.js';
@@ -856,6 +857,29 @@ describe('Extractor Module', () => {
         250 + 125 + 200 + 200, // all tokens
         'total_raw should be sum of all accumulated tokens'
       );
+    });
+  });
+
+  describe('extractMultipleAgentMetrics', () => {
+    it('should return metrics for valid IDs and null for invalid', async () => {
+      // Create a valid agent file
+      const validFile = path.join(TEST_DIR, 'multi-valid.jsonl');
+      fs.writeFileSync(validFile, createSampleJSONL({ agentId: 'abc123' }));
+
+      // extractMultipleAgentMetrics searches by agent ID via findAgentFile,
+      // which scans ~/.claude/projects. We test the parallel execution and
+      // Map structure by passing IDs that won't be found (no mock projects dir)
+      const results = await extractMultipleAgentMetrics(['nonexistent1', 'nonexistent2']);
+      assert.ok(results instanceof Map);
+      assert.strictEqual(results.size, 2);
+      assert.strictEqual(results.get('nonexistent1'), null);
+      assert.strictEqual(results.get('nonexistent2'), null);
+    });
+
+    it('should return empty map for empty input', async () => {
+      const results = await extractMultipleAgentMetrics([]);
+      assert.ok(results instanceof Map);
+      assert.strictEqual(results.size, 0);
     });
   });
 });

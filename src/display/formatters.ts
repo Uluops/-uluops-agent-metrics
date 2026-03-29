@@ -5,7 +5,7 @@
  * All formatters return strings for testability.
  */
 
-import { getBufferStats, type BufferEntry } from '../buffer.js';
+import { getBufferStats, type BufferEntry, type BufferStats } from '../buffer.js';
 import { formatDuration, formatTokens, formatModelName } from '../utils.js';
 import type { AgentMetrics } from '../types.js';
 
@@ -13,27 +13,28 @@ import type { AgentMetrics } from '../types.js';
  * Format buffer statistics as a displayable string.
  *
  * @param title - Title to display at the top
+ * @param stats - Buffer statistics to format (fetched live if not provided)
  * @returns Formatted string ready for console output
  */
-export function formatBufferStatus(title: string): string {
-  const stats = getBufferStats();
+export function formatBufferStatus(title: string, stats?: BufferStats): string {
+  const s = stats ?? getBufferStats();
   const lines: string[] = [];
 
   lines.push(title);
   lines.push('═'.repeat(50));
   lines.push('');
-  lines.push(`Total entries:     ${stats.totalEntries}`);
-  lines.push(`Valid entries:     ${stats.validEntries}`);
-  lines.push(`Expired entries:   ${stats.expiredEntries}`);
-  lines.push(`Unique sessions:   ${stats.uniqueSessions}`);
-  lines.push(`Unique agents:     ${stats.uniqueAgents}`);
-  lines.push(`Buffer size:       ${(stats.bufferSizeBytes / 1024).toFixed(1)} KB`);
+  lines.push(`Total entries:     ${s.totalEntries}`);
+  lines.push(`Valid entries:     ${s.validEntries}`);
+  lines.push(`Expired entries:   ${s.expiredEntries}`);
+  lines.push(`Unique sessions:   ${s.uniqueSessions}`);
+  lines.push(`Unique agents:     ${s.uniqueAgents}`);
+  lines.push(`Buffer size:       ${(s.bufferSizeBytes / 1024).toFixed(1)} KB`);
   lines.push('');
-  if (stats.oldestEntry) {
-    lines.push(`Oldest entry:      ${stats.oldestEntry}`);
+  if (s.oldestEntry) {
+    lines.push(`Oldest entry:      ${s.oldestEntry}`);
   }
-  if (stats.newestEntry) {
-    lines.push(`Newest entry:      ${stats.newestEntry}`);
+  if (s.newestEntry) {
+    lines.push(`Newest entry:      ${s.newestEntry}`);
   }
 
   return lines.join('\n');

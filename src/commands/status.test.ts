@@ -6,37 +6,23 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { Command } from 'commander';
 import { registerStatusCommands } from './status.js';
+import { createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
 
 describe('Status Commands', () => {
-  let program: Command;
-  let output: string[];
-  let exitCode: number | null;
-  const originalConsoleLog = console.log;
-  const originalConsoleError = console.error;
-  const originalProcessExit = process.exit;
+  let harness: CommandTestHarness;
+  let program: CommandTestHarness['program'];
+  let output: CommandTestHarness['output'];
 
   beforeEach(() => {
-    program = new Command();
-    program.exitOverride();
-    output = [];
-    exitCode = null;
-
-    console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
-    console.error = (...args: unknown[]) => output.push(args.map(String).join(' '));
-    (process.exit as unknown) = (code: number) => {
-      exitCode = code;
-      throw new Error(`EXIT:${code}`);
-    };
-
+    harness = createCommandTestHarness();
+    program = harness.program;
+    output = harness.output;
     registerStatusCommands(program);
   });
 
   afterEach(() => {
-    console.log = originalConsoleLog;
-    console.error = originalConsoleError;
-    (process.exit as unknown) = originalProcessExit;
+    harness.restore();
   });
 
   describe('status command', () => {
@@ -62,7 +48,7 @@ describe('Status Commands', () => {
     it('should respect --limit option', async () => {
       await program.parseAsync(['node', 'test', 'report', '-n', '5']);
 
-      assert.strictEqual(exitCode, null, 'Should not exit with error for valid limit');
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error for valid limit');
     });
 
     it('should reject invalid --limit value', async () => {
@@ -70,20 +56,20 @@ describe('Status Commands', () => {
         await program.parseAsync(['node', 'test', 'report', '-n', '0']);
         assert.fail('Should have thrown for limit 0');
       } catch (err) {
-        assert.strictEqual(exitCode, 1, 'Should exit with code 1 for invalid limit');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1 for invalid limit');
       }
     });
 
     it('should accept --session filter', async () => {
       await program.parseAsync(['node', 'test', 'report', '-s', 'some-session-id']);
 
-      assert.strictEqual(exitCode, null, 'Should not exit with error');
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error');
     });
 
     it('should accept --current flag', async () => {
       await program.parseAsync(['node', 'test', 'report', '--current']);
 
-      assert.strictEqual(exitCode, null, 'Should not exit with error');
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error');
     });
   });
 });

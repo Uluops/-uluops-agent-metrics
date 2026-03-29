@@ -10,41 +10,23 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { Command } from 'commander';
 import { registerBufferCommands } from './buffer.js';
+import { createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
 
 describe('Buffer Commands', () => {
-  let program: Command;
-  let output: string[];
-  let exitCode: number | null;
-  const originalConsoleLog = console.log;
-  const originalConsoleError = console.error;
-  const originalProcessExit = process.exit;
+  let harness: CommandTestHarness;
+  let program: CommandTestHarness['program'];
+  let output: CommandTestHarness['output'];
 
   beforeEach(() => {
-    // Reset program and output capture
-    program = new Command();
-    program.exitOverride();
-    output = [];
-    exitCode = null;
-
-    // Capture console output
-    console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
-    console.error = (...args: unknown[]) => output.push(args.map(String).join(' '));
-
-    // Capture exit code
-    (process.exit as unknown) = (code: number) => {
-      exitCode = code;
-      throw new Error(`EXIT:${code}`);
-    };
-
+    harness = createCommandTestHarness();
+    program = harness.program;
+    output = harness.output;
     registerBufferCommands(program);
   });
 
   afterEach(() => {
-    console.log = originalConsoleLog;
-    console.error = originalConsoleError;
-    (process.exit as unknown) = originalProcessExit;
+    harness.restore();
   });
 
   describe('buffer status command', () => {
@@ -62,7 +44,7 @@ describe('Buffer Commands', () => {
       await program.parseAsync(['node', 'test', 'buffer', 'list']);
 
       // Should execute without error
-      assert.strictEqual(exitCode, null, 'Should not exit with error');
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error');
     });
 
     it('should output json format when requested', async () => {
@@ -86,14 +68,14 @@ describe('Buffer Commands', () => {
       await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', '30m']);
 
       // Should execute without error
-      assert.strictEqual(exitCode, null, 'Should not exit with error for valid format');
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error for valid format');
     });
 
     it('should accept --since with hours format', async () => {
       await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', '2h']);
 
       // Should execute without error
-      assert.strictEqual(exitCode, null, 'Should not exit with error for valid format');
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error for valid format');
     });
 
     it('should reject invalid --since format', async () => {
@@ -101,7 +83,7 @@ describe('Buffer Commands', () => {
         await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', 'invalid']);
         assert.fail('Should have thrown');
       } catch {
-        assert.strictEqual(exitCode, 1, 'Should exit with code 1');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1');
         assert.ok(output.some(o => o.includes('Invalid')), 'Should show error message');
       }
     });
@@ -139,7 +121,7 @@ describe('Buffer Commands', () => {
         await program.parseAsync(['node', 'test', 'buffer', 'clear']);
         assert.fail('Should have thrown');
       } catch {
-        assert.strictEqual(exitCode, 1, 'Should exit with code 1');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1');
         assert.ok(output.some(o => o.includes('Specify')), 'Should show usage message');
       }
     });

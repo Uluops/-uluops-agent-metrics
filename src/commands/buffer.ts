@@ -26,7 +26,7 @@ import type { BufferFormat } from '../types.js';
  */
 function parseSinceDuration(raw: string): Date | null {
   const match = raw.match(/^(\d+)(m|h)$/);
-  if (!match) return null;
+  if (!match?.[1] || !match[2]) return null;
   const value = parseInt(match[1], 10);
   const unit = match[2];
   const ms = unit === 'h' ? value * 60 * 60 * 1000 : value * 60 * 1000;
