@@ -73,11 +73,128 @@ export async function extractAgentMetrics(
   return extractMetricsFromFile(location.filePath);
 }
 
+/** Safely coerce a value to a number, returning 0 for non-numeric values */
+function safeNum(v: unknown): number {
+  return typeof v === 'number' && !isNaN(v) ? v : 0;
+}
+
+/** Mutable accumulators used during JSONL parsing */
+interface MetricsAccumulator {
+  firstMessage: RawAgentMessage | null;
+  lastMessage: RawAgentMessage | null;
+  models: Set<string>;
+  messageCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  toolUseCount: number;
+  toolBreakdown: Record<string, number>;
+  errorCount: number;
+}
+
+function createAccumulator(): MetricsAccumulator {
+  return {
+    firstMessage: null,
+    lastMessage: null,
+    models: new Set(),
+    messageCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    toolUseCount: 0,
+    toolBreakdown: {},
+    errorCount: 0,
+  };
+}
+
+/** Accumulate token usage from a message's usage field */
+function accumulateTokens(acc: MetricsAccumulator, usage: NonNullable<RawAgentMessage['message']>['usage']): void {
+  if (!usage) return;
+  acc.inputTokens += safeNum(usage.input_tokens);
+  acc.outputTokens += safeNum(usage.output_tokens);
+  acc.cacheCreationTokens += safeNum(usage.cache_creation_input_tokens);
+  acc.cacheReadTokens += safeNum(usage.cache_read_input_tokens);
+}
+
+/** Count tool uses from assistant message content blocks */
+function accumulateToolUses(acc: MetricsAccumulator, content: unknown[]): void {
+  for (const block of content) {
+    if (isToolUseBlock(block)) {
+      acc.toolUseCount++;
+      const toolName = block.name || 'unknown';
+      acc.toolBreakdown[toolName] = (acc.toolBreakdown[toolName] || 0) + 1;
+    }
+  }
+}
+
+/** Process a single validated message into the accumulator */
+function processMessage(acc: MetricsAccumulator, message: RawAgentMessage): void {
+  acc.messageCount++;
+
+  if (!acc.firstMessage) acc.firstMessage = message;
+  acc.lastMessage = message;
+
+  if (message.message?.model) {
+    acc.models.add(message.message.model);
+  }
+
+  accumulateTokens(acc, message.message?.usage);
+
+  if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
+    accumulateToolUses(acc, message.message.content);
+  }
+
+  if (message.type === 'tool_result' && message.toolUseResult?.is_error) {
+    acc.errorCount++;
+  }
+}
+
+/** Build the final AgentMetrics object from a completed accumulator */
+function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
+  const first = acc.firstMessage!;
+  const last = acc.lastMessage!;
+  const durationMs = calculateDuration(first.timestamp, last.timestamp);
+
+  return {
+    agent_id: first.agentId,
+    session_id: first.sessionId,
+    slug: first.slug,
+    model: acc.models.size > 0 ? Array.from(acc.models)[0] : 'unknown',
+    git_branch: first.gitBranch,
+    cwd: first.cwd,
+    claude_code_version: first.version,
+    start_time: first.timestamp,
+    end_time: last.timestamp,
+    duration_ms: durationMs,
+    duration_formatted: formatDuration(durationMs),
+    tokens: {
+      input: acc.inputTokens,
+      output: acc.outputTokens,
+      cache_creation: acc.cacheCreationTokens,
+      cache_read: acc.cacheReadTokens,
+      total_effective: acc.inputTokens + acc.cacheCreationTokens + acc.outputTokens,
+      total_raw: acc.inputTokens + acc.outputTokens + acc.cacheCreationTokens + acc.cacheReadTokens,
+    },
+    execution: {
+      message_count: acc.messageCount,
+      tool_use_count: acc.toolUseCount,
+      tool_breakdown: acc.toolBreakdown,
+      error_count: acc.errorCount,
+    },
+  };
+}
+
 /**
- * Extract metrics directly from a file path
+ * Extract metrics directly from a file path.
+ *
+ * Streams the JSONL file line-by-line, validates each message,
+ * and accumulates token, tool, and timing metrics.
  *
  * @param filePath - Path to the agent JSONL file
  * @returns AgentMetrics object
+ * @throws Error if no valid messages found in the file
  */
 export async function extractMetricsFromFile(
   filePath: string
@@ -88,22 +205,7 @@ export async function extractMetricsFromFile(
     crlfDelay: Infinity,
   });
 
-  // Accumulators
-  let firstMessage: RawAgentMessage | null = null;
-  let lastMessage: RawAgentMessage | null = null;
-  const models = new Set<string>();
-
-  // Token accumulators
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalCacheCreationTokens = 0;
-  let totalCacheReadTokens = 0;
-
-  // Execution accumulators
-  let messageCount = 0;
-  let toolUseCount = 0;
-  const toolBreakdown: Record<string, number> = {};
-  let errorCount = 0;
+  const acc = createAccumulator();
 
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -114,100 +216,18 @@ export async function extractMetricsFromFile(
         process.stderr.write(`Warning: Skipping message with missing required fields in ${filePath}\n`);
         continue;
       }
-      const message = parsed; // Now properly validated as RawAgentMessage
-      messageCount++;
-
-      // Track first and last messages for timing
-      if (!firstMessage) {
-        firstMessage = message;
-      }
-      lastMessage = message;
-
-      // Track model
-      if (message.message?.model) {
-        models.add(message.message.model);
-      }
-
-      // Accumulate token usage (validate numeric to prevent NaN propagation)
-      if (message.message?.usage) {
-        const usage = message.message.usage;
-        const num = (v: unknown): number => typeof v === 'number' && !isNaN(v) ? v : 0;
-        totalInputTokens += num(usage.input_tokens);
-        totalOutputTokens += num(usage.output_tokens);
-        totalCacheCreationTokens += num(usage.cache_creation_input_tokens);
-        totalCacheReadTokens += num(usage.cache_read_input_tokens);
-      }
-
-      // Count tool uses from assistant messages
-      if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
-        const content = message.message.content;
-        for (const block of content) {
-          if (isToolUseBlock(block)) {
-            toolUseCount++;
-            const toolName = block.name || 'unknown';
-            toolBreakdown[toolName] = (toolBreakdown[toolName] || 0) + 1;
-          }
-        }
-      }
-
-      // Count errors from tool results
-      if (message.type === 'tool_result' && message.toolUseResult?.is_error) {
-        errorCount++;
-      }
+      processMessage(acc, parsed);
     } catch (err) {
-      // Log malformed lines so users have visibility into data issues
       process.stderr.write(`Warning: Skipping malformed JSONL line in ${filePath}: ${err instanceof Error ? err.message : 'parse error'}\n`);
       continue;
     }
   }
 
-  // Handle empty or invalid files
-  if (!firstMessage || !lastMessage) {
+  if (!acc.firstMessage || !acc.lastMessage) {
     throw new Error(`No valid messages found in ${filePath}`);
   }
 
-  // Calculate timing
-  const durationMs = calculateDuration(firstMessage.timestamp, lastMessage.timestamp);
-
-  // Build token metrics
-  const tokens: TokenMetrics = {
-    input: totalInputTokens,
-    output: totalOutputTokens,
-    cache_creation: totalCacheCreationTokens,
-    cache_read: totalCacheReadTokens,
-    total_effective: totalInputTokens + totalCacheCreationTokens + totalOutputTokens,
-    total_raw: totalInputTokens + totalOutputTokens + totalCacheCreationTokens + totalCacheReadTokens,
-  };
-
-  // Build execution metrics
-  const execution: ExecutionMetrics = {
-    message_count: messageCount,
-    tool_use_count: toolUseCount,
-    tool_breakdown: toolBreakdown,
-    error_count: errorCount,
-  };
-
-  // Determine primary model (most commonly used)
-  const model = models.size > 0 ? Array.from(models)[0] : 'unknown';
-
-  // Build final metrics object
-  const metrics: AgentMetrics = {
-    agent_id: firstMessage.agentId,
-    session_id: firstMessage.sessionId,
-    slug: firstMessage.slug,
-    model,
-    git_branch: firstMessage.gitBranch,
-    cwd: firstMessage.cwd,
-    claude_code_version: firstMessage.version,
-    start_time: firstMessage.timestamp,
-    end_time: lastMessage.timestamp,
-    duration_ms: durationMs,
-    duration_formatted: formatDuration(durationMs),
-    tokens,
-    execution,
-  };
-
-  return metrics;
+  return buildMetrics(acc);
 }
 
 /**

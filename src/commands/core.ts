@@ -30,6 +30,12 @@ import type { ExtractFormat } from '../types.js';
 
 /**
  * Register core commands on the program.
+ *
+ * Adds the following commands:
+ * - `extract <agent-id>` — Extract metrics for a specific agent (json/summary/tracker output)
+ * - `list` — List recent agent runs with duration, tokens, and tool counts
+ * - `find <agent-id>` — Locate the JSONL file for an agent
+ * - `compare <agent-ids...>` — Side-by-side comparison of multiple agents
  */
 export function registerCoreCommands(program: Command): void {
   // Extract command

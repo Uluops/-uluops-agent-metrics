@@ -138,11 +138,13 @@ export interface ToolUseBlock {
   input: unknown;
 }
 
+/** Text content block in assistant messages */
 export interface TextBlock {
   type: 'text';
   text: string;
 }
 
+/** Thinking/reasoning content block in assistant messages */
 export interface ThinkingBlock {
   type: 'thinking';
   thinking: string;
