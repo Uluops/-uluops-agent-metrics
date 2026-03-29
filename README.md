@@ -17,46 +17,51 @@ Claude Code stores detailed execution data for every agent (Task tool) invocatio
 
 ## Installation
 
-### Global Installation (Recommended)
-
-Install globally to use `agent-metrics` from any directory:
+### Via npm (Recommended)
 
 ```bash
-cd packages/-uluops-agent-metrics
-./install.sh
+npm install -g @uluops/agent-metrics
 ```
 
-Or manually:
-
-```bash
-cd packages/-uluops-agent-metrics
-npm install
-npm run build
-npm link
-```
-
-After installation, the `agent-metrics` command is available globally:
+The `agent-metrics` command is now available globally:
 
 ```bash
 agent-metrics --version
 agent-metrics list
 ```
 
-### Local Installation
+### Via UluOps Setup
 
-For project-specific use:
+If you use [`@uluops/setup`](https://www.npmjs.com/package/@uluops/setup), agent-metrics is installed automatically with the SubagentStop hook pre-configured:
 
 ```bash
-cd packages/-uluops-agent-metrics
+npx @uluops/setup
+```
+
+### From Source
+
+```bash
+git clone https://github.com/Uluops/-uluops-agent-metrics.git
+cd -uluops-agent-metrics
 npm install
 npm run build
-node dist/index.js list
+npm link
+```
+
+### As a Project Dependency
+
+```bash
+npm install @uluops/agent-metrics
+```
+
+```typescript
+import { extractAgentMetrics, queryBuffer } from '@uluops/agent-metrics';
 ```
 
 ### Uninstall
 
 ```bash
-./install.sh --unlink
+npm uninstall -g @uluops/agent-metrics
 ```
 
 ## Usage
@@ -241,14 +246,9 @@ Ready for `save_run`:
 
 ## Programmatic Usage
 
-> **Note:** The package is not yet published to npm. For programmatic imports:
-> 1. Run `npm link` in this package directory to create the global symlink
-> 2. Run `npm link @uluops/agent-metrics` in your consuming project to resolve the package
->
-> Alternatively, add a `file:` dependency in your project's `package.json`:
-> ```json
-> "@uluops/agent-metrics": "file:../packages/-uluops-agent-metrics"
-> ```
+```bash
+npm install @uluops/agent-metrics
+```
 
 ### Core Extraction Functions
 
