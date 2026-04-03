@@ -72,6 +72,7 @@ export function createTestMetrics(overrides: Partial<AgentMetrics> = {}): AgentM
     git_branch: 'main',
     cwd: '/test/path',
     claude_code_version: '2.0.0',
+    prompt_id: null,
     start_time: new Date().toISOString(),
     end_time: new Date().toISOString(),
     duration_ms: TEST_DURATION_MS,

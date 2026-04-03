@@ -132,51 +132,117 @@ export function formatBufferSession(sessionId: string, entries: BufferEntry[]): 
  * @param entries - Buffer entries to display
  * @returns Formatted table string
  */
+/**
+ * Compute cache hit rate as a percentage.
+ * Formula: cache_read / (cache_read + cache_creation + input) * 100
+ */
+function cacheHitRate(tokens: { cache_read: number; cache_creation: number; input: number }): number {
+  const total = tokens.cache_read + tokens.cache_creation + tokens.input;
+  if (total === 0) return 0;
+  return Math.round((tokens.cache_read / total) * 100);
+}
+
+/**
+ * Extract a readable project name from a full path.
+ * Uses the last path segment (directory name) without truncation.
+ */
+function projectName(projectPath: string | undefined): string {
+  if (!projectPath) return '';
+  const segments = projectPath.split('/').filter(Boolean);
+  return segments[segments.length - 1] || '';
+}
+
+/**
+ * Format a single report row for an entry.
+ */
+function formatReportRow(entry: BufferEntry, indent: string = ''): string {
+  const name = (entry.agent_name || projectName(entry.project_path) || entry.agent_id).slice(0, 24).padEnd(24);
+  const modelShort = formatModelName(entry.metrics.model).padEnd(10);
+  const duration = entry.metrics.duration_formatted.padEnd(8);
+  const tokens = formatTokens(entry.metrics.tokens.total_effective).padEnd(8);
+  const cache = `${cacheHitRate(entry.metrics.tokens).toString()}%`.padStart(5);
+  const tools = entry.metrics.execution.tool_use_count.toString().padStart(5);
+  const id = indent ? entry.agent_id.slice(0, 16).padEnd(16) : entry.agent_id.padEnd(18);
+
+  return `${indent}${id}  │  ${name}  │  ${modelShort}  │  ${duration}  │  ${tokens}  │  ${cache}  │  ${tools}`;
+}
+
 export function formatReport(entries: BufferEntry[]): string {
   if (entries.length === 0) {
     return 'No metrics captured yet.';
   }
 
   const lines: string[] = [];
+  const W = 110;
   lines.push('Recent Agent Metrics');
-  lines.push('═'.repeat(85));
+  lines.push('═'.repeat(W));
   lines.push('');
   lines.push(
-    'Agent ID   │  Model        │  Duration  │  Tokens    │  Tools  │  Project'
+    'Agent ID            │  Agent Name              │  Model      │  Duration  │  Tokens   │  Cache  │  Tools'
   );
-  lines.push('─'.repeat(85));
+  lines.push('─'.repeat(W));
 
   let totalDuration = 0;
   let totalTokens = 0;
   let totalTools = 0;
 
+  // Group entries by prompt_id for workflow grouping
+  const groups = new Map<string, BufferEntry[]>();
+  const ungrouped: BufferEntry[] = [];
+
   for (const entry of entries) {
-    const modelShort = formatModelName(entry.metrics.model).padEnd(12);
-    const duration = entry.metrics.duration_formatted.padEnd(8);
-    const tokens = formatTokens(entry.metrics.tokens.total_effective).padEnd(8);
-    const tools = entry.metrics.execution.tool_use_count.toString().padStart(5);
-    const project = (entry.project_path || '')
-      .split('/')
-      .slice(-2)
-      .join('/')
-      .slice(0, 20);
+    const pid = entry.prompt_id;
+    if (pid) {
+      const group = groups.get(pid) ?? [];
+      group.push(entry);
+      groups.set(pid, group);
+    } else {
+      ungrouped.push(entry);
+    }
+  }
 
-    lines.push(
-      `${entry.agent_id.padEnd(10)}  │  ${modelShort}  │  ${duration}  │  ${tokens}  │  ${tools}  │  ${project}`
-    );
+  // Render grouped entries (groups with 2+ agents get a header)
+  for (const [, group] of groups) {
+    if (group.length >= 2) {
+      const groupDuration = group.reduce((sum, e) => sum + e.metrics.duration_ms, 0);
+      const groupTokens = group.reduce((sum, e) => sum + e.metrics.tokens.total_effective, 0);
+      const project = projectName(group[0]?.project_path);
+      lines.push(`  ┌ ${project} (${group.length} agents, ${formatDuration(groupDuration)} total, ${formatTokens(groupTokens)} tokens)`);
+      for (const entry of group) {
+        lines.push(formatReportRow(entry, '  │ '));
+        totalDuration += entry.metrics.duration_ms;
+        totalTokens += entry.metrics.tokens.total_effective;
+        totalTools += entry.metrics.execution.tool_use_count;
+      }
+      lines.push('  └');
+    } else {
+      // Single-agent "group" — render flat
+      for (const entry of group) {
+        lines.push(formatReportRow(entry));
+        totalDuration += entry.metrics.duration_ms;
+        totalTokens += entry.metrics.tokens.total_effective;
+        totalTools += entry.metrics.execution.tool_use_count;
+      }
+    }
+  }
 
+  // Render ungrouped entries
+  for (const entry of ungrouped) {
+    lines.push(formatReportRow(entry));
     totalDuration += entry.metrics.duration_ms;
     totalTokens += entry.metrics.tokens.total_effective;
     totalTools += entry.metrics.execution.tool_use_count;
   }
 
-  lines.push('─'.repeat(85));
-  const totLabel = 'TOTAL'.padEnd(10);
-  const totEmpty = ''.padEnd(12);
+  lines.push('─'.repeat(W));
+  const totLabel = 'TOTAL'.padEnd(18);
+  const totEmpty = ''.padEnd(24);
+  const totModelEmpty = ''.padEnd(10);
   const totDur = formatDuration(totalDuration).padEnd(8);
   const totTok = formatTokens(totalTokens).padEnd(8);
+  const totCache = ''.padStart(5);
   const totToolsStr = totalTools.toString().padStart(5);
-  lines.push(`${totLabel}  │  ${totEmpty}  │  ${totDur}  │  ${totTok}  │  ${totToolsStr}  │`);
+  lines.push(`${totLabel}  │  ${totEmpty}  │  ${totModelEmpty}  │  ${totDur}  │  ${totTok}  │  ${totCache}  │  ${totToolsStr}`);
   lines.push('');
   lines.push(`Showing ${entries.length} entries`);
 

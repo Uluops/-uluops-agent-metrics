@@ -171,6 +171,9 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
     git_branch: first.gitBranch,
     cwd: first.cwd,
     claude_code_version: first.version,
+    prompt_id: typeof (first as unknown as Record<string, unknown>).promptId === 'string'
+      ? (first as unknown as Record<string, unknown>).promptId as string
+      : null,
     start_time: first.timestamp,
     end_time: last.timestamp,
     duration_ms: durationMs,

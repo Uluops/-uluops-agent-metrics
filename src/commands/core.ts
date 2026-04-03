@@ -38,43 +38,70 @@ import type { ExtractFormat } from '../types.js';
  * - `compare <agent-ids...>` — Side-by-side comparison of multiple agents
  */
 export function registerCoreCommands(program: Command): void {
-  // Extract command
+  // Extract command — supports single or multiple agent IDs
   program
-    .command('extract <agent-id>')
-    .description('Extract metrics for a specific agent ID')
+    .command('extract <agent-ids...>')
+    .description('Extract metrics for one or more agent IDs')
     .option('-p, --project <path>', 'Project path to search in')
     .addOption(new Option('-f, --format <format>', 'Output format').choices(['json', 'summary', 'tracker']).default('json'))
-    .option('-a, --agent-name <name>', 'Agent name for tracker format')
-    .action(async (agentId: string, options: { project?: string; format: ExtractFormat; agentName?: string }) => {
+    .option('--json', 'Shorthand for -f json')
+    .option('-a, --agent-name <name>', 'Agent name for tracker format (single agent)')
+    .option('--agent-names <names>', 'Comma-separated agent names for tracker format (batch)')
+    .action(async (agentIds: string[], options: { project?: string; format: ExtractFormat; json?: boolean; agentName?: string; agentNames?: string }) => {
       try {
-        const metrics = await extractAgentMetrics(agentId, {
-          projectPath: options.project,
-        });
+        const format = options.json ? 'json' : options.format;
+        const nameList = options.agentNames?.split(',').map(n => n.trim());
 
-        if (!metrics) {
-          console.error(`Agent file not found for ID: ${agentId}`);
-          console.error('Run "agent-metrics list" to see available agent IDs.');
-          process.exit(1);
+        // Batch extract
+        const results: Array<{ agentId: string; metrics: ReturnType<typeof toTrackerFormat> extends infer T ? T : never } | null> = [];
+        const jsonResults: unknown[] = [];
+
+        for (let i = 0; i < agentIds.length; i++) {
+          const agentId = agentIds[i]!;
+          const metrics = await extractAgentMetrics(agentId, {
+            projectPath: options.project,
+          });
+
+          if (!metrics) {
+            console.error(`Agent file not found for ID: ${agentId}`);
+            if (agentIds.length === 1) {
+              console.error('Run "agent-metrics list" to see available agent IDs.');
+              process.exit(1);
+            }
+            continue;
+          }
+
+          // Resolve agent name: --agent-names (batch) > --agent-name (single) > buffer lookup
+          let agentName = nameList?.[i] || options.agentName;
+          if (!agentName) {
+            const bufferEntries = queryBuffer({ agentId });
+            const bufferEntry = bufferEntries.find(e => e.agent_id === agentId);
+            agentName = bufferEntry?.agent_name || 'unknown';
+          }
+
+          switch (format) {
+            case 'summary':
+              if (agentIds.length > 1) {
+                console.log(`\n─── ${agentName} (${agentId}) ───`);
+              }
+              console.log(formatMetricsSummary(metrics));
+              break;
+            case 'tracker':
+              jsonResults.push(toTrackerFormat(metrics, agentName));
+              break;
+            case 'json':
+              jsonResults.push(metrics);
+              break;
+          }
         }
 
-        switch (options.format) {
-          case 'summary':
-            console.log(formatMetricsSummary(metrics));
-            break;
-          case 'tracker': {
-            // Auto-lookup agent name from buffer if not provided
-            let agentName = options.agentName;
-            if (!agentName) {
-              const bufferEntries = queryBuffer({ agentId });
-              const bufferEntry = bufferEntries.find(e => e.agent_id === agentId);
-              agentName = bufferEntry?.agent_name || 'unknown';
-            }
-            console.log(JSON.stringify(toTrackerFormat(metrics, agentName), null, 2));
-            break;
+        // For JSON/tracker formats, output array if batch, single object if solo
+        if (format === 'json' || format === 'tracker') {
+          if (jsonResults.length === 1) {
+            console.log(JSON.stringify(jsonResults[0], null, 2));
+          } else if (jsonResults.length > 1) {
+            console.log(JSON.stringify(jsonResults, null, 2));
           }
-          case 'json':
-            console.log(JSON.stringify(metrics, null, 2));
-            break;
         }
       } catch (error) {
         console.error('Error extracting metrics:', error instanceof Error ? error.message : error);

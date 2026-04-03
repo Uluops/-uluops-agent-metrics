@@ -42,6 +42,7 @@ function createMockMetrics(overrides: Partial<AgentMetrics> = {}): AgentMetrics 
     git_branch: 'main',
     cwd: '/test/project',
     claude_code_version: '1.0.0',
+    prompt_id: null,
     start_time: '2026-01-09T10:00:00.000Z',
     end_time: '2026-01-09T10:05:00.000Z',
     duration_ms: 300000,

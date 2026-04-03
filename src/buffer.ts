@@ -32,6 +32,8 @@ export interface BufferEntry {
   agent_name?: string;
   /** Optional project path */
   project_path?: string;
+  /** Prompt ID — shared by all agents from the same user message (workflow grouping) */
+  prompt_id?: string;
 }
 
 /**
@@ -173,6 +175,7 @@ export function appendToBuffer(
     metrics,
     agent_name: options.agentName,
     project_path: options.projectPath,
+    prompt_id: metrics.prompt_id ?? undefined,
   };
 
   // Acquire lock for safe concurrent access

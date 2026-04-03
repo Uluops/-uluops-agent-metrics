@@ -42,84 +42,137 @@ program
 Agent Metrics - Usage Examples
 ══════════════════════════════════════════════════════════════════════════════
 
-BASIC COMMANDS
+QUICK START
 ──────────────────────────────────────────────────────────────────────────────
 
-  List recent agent runs:
-    $ agent-metrics list
-    $ agent-metrics list --limit 20
+  See what agents ran recently (current session):
+    $ agent-metrics report --current
 
-  Extract metrics for a specific agent:
+  See all recent agent metrics:
+    $ agent-metrics report
+    $ agent-metrics report -n 50
+
+
+EXTRACT METRICS
+──────────────────────────────────────────────────────────────────────────────
+
+  Single agent (JSON output):
     $ agent-metrics extract a7c642b
-    $ agent-metrics extract a7c642b --format summary
-    $ agent-metrics extract a7c642b --format tracker --agent-name code-validator
+    $ agent-metrics extract a7c642b --json
+    $ agent-metrics extract a7c642b -f summary
+
+  Multiple agents (batch):
+    $ agent-metrics extract a7c642b a03c37d af0c1a1
+    $ agent-metrics extract a7c642b a03c37d -f summary
+
+  Tracker-ready format (for mcp__uluops-tracker__update_run):
+    $ agent-metrics extract a7c642b -f tracker --agent-name code-validator
+    $ agent-metrics extract a7c642b a03c37d af0c1a1 \\
+        -f tracker \\
+        --agent-names "code-validator,test-architect,security-analyst"
+
+  Output from tracker format can be copied directly into update_run:
+    {
+      "name": "code-validator",
+      "model": "claude-sonnet-4-6",
+      "tokens": {
+        "input_tokens": 221,
+        "output_tokens": 13342,
+        "cache_creation_tokens": 122942,
+        "cache_read_tokens": 2992249,
+        "total_effective_tokens": 136505
+      },
+      "duration_ms": 650777
+    }
+
+
+COMPARE AGENTS
+──────────────────────────────────────────────────────────────────────────────
+
+  Side-by-side comparison table:
+    $ agent-metrics compare a7c642b a03c37d af0c1a1
 
   Find agent file location:
     $ agent-metrics find a7c642b
 
-  Compare multiple agents:
-    $ agent-metrics compare a7c642b a03c37d af0c1a1
+  List recent runs from disk:
+    $ agent-metrics list
+    $ agent-metrics list --limit 20
 
 
-BUFFER COMMANDS
+REPORT COLUMNS
 ──────────────────────────────────────────────────────────────────────────────
 
-  Show recent metrics (formatted table):
-    $ agent-metrics report
-    $ agent-metrics report --session ea588859-88cd-4511-851a-4fe928cd77c7
-    $ agent-metrics report --current
+  The report table shows:
+    Agent ID     — Unique identifier for each agent run
+    Agent Name   — Auto-detected from [agent:name] tags or pattern matching
+    Model        — sonnet-4-6, opus-4-6, haiku-4-5
+    Duration     — Wall clock time
+    Tokens       — Effective tokens (input + cache_creation + output)
+    Cache        — Cache hit rate (cache_read / total * 100)
+    Tools        — Number of tool calls made
+
+  Agent names are detected automatically via:
+    1. Explicit tag in prompt: [agent:code-validator] (highest priority)
+    2. Pattern matching against known agent names (fallback)
+    3. Project directory name (final fallback)
+
+
+BUFFER & FILTERING
+──────────────────────────────────────────────────────────────────────────────
+
+  Buffer stores metrics from all agents with 24h TTL.
 
   Show buffer status:
     $ agent-metrics status
-    $ agent-metrics buffer status
 
   List buffered entries:
     $ agent-metrics buffer list
     $ agent-metrics buffer list --format json
 
   Filter by project (partial match):
-    $ agent-metrics buffer list --project ops-uluops-mcp
-    $ agent-metrics buffer list -p dashboard
+    $ agent-metrics buffer list --project ops-uluops-api
 
   Filter by agent name:
     $ agent-metrics buffer list --agent-name code-validator
-    $ agent-metrics buffer list --agent-name test-architect
 
-  Filter by time window (when agents finished):
-    $ agent-metrics buffer list --end-after 2026-01-14T04:00:00Z
-    $ agent-metrics buffer list --end-after 2026-01-14T04:00:00Z --end-before 2026-01-14T05:00:00Z
-
-  Filter by recent capture time:
+  Filter by time window:
     $ agent-metrics buffer list --since 2h
-    $ agent-metrics buffer list --since 30m
+    $ agent-metrics buffer list --end-after 2026-01-14T04:00:00Z
 
   Get all entries for a session:
-    $ agent-metrics buffer session 7b543cfe-7f1c-460d-8c11-2ac8c8d02f47
-    $ agent-metrics buffer session 7b543cfe --format tracker
+    $ agent-metrics buffer session <session-id>
+    $ agent-metrics buffer session <session-id> --format tracker
 
 
-CORRELATION WITH TRACKER
+TRACKER INTEGRATION
 ──────────────────────────────────────────────────────────────────────────────
 
-  Find agents that ran around a specific tracker run timestamp:
+  Typical workflow for updating a tracker run with token metrics:
 
-    # If tracker shows run at 2026-01-14T05:11:33Z, search window before:
-    $ agent-metrics buffer list \
-        --end-after 2026-01-14T04:00:00Z \
-        --end-before 2026-01-14T05:15:00Z \
-        --project ops-uluops-mcp
+  1. Run the ship pipeline (agents auto-captured by hook)
 
-  Get tracker-ready format for backfilling token data:
-    $ agent-metrics buffer session <session-id> --format tracker
+  2. Check what was captured:
+     $ agent-metrics report --current
+
+  3. Extract tracker-ready JSON for the run's agents:
+     $ agent-metrics extract abd2f0a aade737 a294352 \\
+         -f tracker \\
+         --agent-names "code-validator,type-safety,test-architect"
+
+  4. Copy the output into mcp__uluops-tracker__update_run
+
+  Alternative: use buffer session for all agents at once:
+     $ agent-metrics buffer session <session-id> --format tracker
 
 
 MAINTENANCE
 ──────────────────────────────────────────────────────────────────────────────
 
-  Clear expired entries (garbage collect):
+  Clear expired entries:
     $ agent-metrics buffer clear --expired
 
-  Clear entries for a session (after saving to tracker):
+  Clear after saving to tracker:
     $ agent-metrics buffer clear --session <session-id>
 
   View metrics log:

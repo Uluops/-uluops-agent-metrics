@@ -74,6 +74,8 @@ export interface AgentMetrics {
   cwd: string;
   /** Claude Code version */
   claude_code_version: string;
+  /** Prompt ID — shared by all agents spawned from the same user message (workflow grouping key) */
+  prompt_id: string | null;
 
   // Timing
   /** Start time in ISO 8601 format */
