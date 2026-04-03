@@ -66,46 +66,55 @@ npm uninstall -g @uluops/agent-metrics
 
 ## Usage
 
-### Quick Status Check
+### Quick Start
 
 ```bash
-# Show buffer statistics (what's been auto-captured)
-agent-metrics status
+# See what agents ran in the current session
+agent-metrics report --current
 
-# Show recent auto-captured metrics in a nice table
+# See all recent agent metrics
 agent-metrics report
-agent-metrics report --current  # Current session only
-```
-
-### List Recent Agent Runs
-
-```bash
-agent-metrics list
-agent-metrics list -n 20  # Show more results
+agent-metrics report -n 50
 ```
 
 Output:
 ```
-Recent Agent Runs
-════════════════════════════════════════════════════════════════════════════════
+Recent Agent Metrics
+══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
-a80e24f  │  1m 53s   │  65.4k   │  13 tools  │  claude-agent-workflows
-ac51171  │  4m 38s   │  190.5k  │  31 tools  │  claude-agent-workflows
+Agent ID            │  Agent Name              │  Model      │  Duration  │  Tokens   │  Cache  │  Tools
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ┌ ops-uluops-api (3 agents, 17m total, 585k tokens)
+  │ a77373c5debd07e95  │  type-safety-validator    │  sonnet-4-6  │   3m 9s    │  155k     │   93%  │     44
+  │ a02cd0561f2543ed0  │  test-architect           │  sonnet-4-6  │   6m 4s    │  268k     │   93%  │     46
+  │ aa926931b1d22ba2b  │  public-interface          │  sonnet-4-6  │   8m 42s   │  162k     │   95%  │     58
+  └
+a5511f269fb53e254    │  code-auditor              │  opus-4-6    │   3m 2s    │  466k     │   88%  │     46
 ```
 
-### Extract Metrics for a Specific Agent
+Report columns:
+- **Agent Name** — auto-detected from `[agent:name]` tags or pattern matching; falls back to project name
+- **Cache%** — cache hit rate (`cache_read / (cache_read + cache_creation + input) * 100`)
+- Agents from the same conversation turn are **grouped** with a summary header
 
-> **Note:** The agent ID comes from Claude Code session files in `~/.claude/projects/`. Use `agent-metrics list` to find available IDs.
+### Extract Metrics
 
 ```bash
-# JSON format (default)
+# Single agent (JSON)
 agent-metrics extract a80e24f
+agent-metrics extract a80e24f --json        # --json alias for -f json
+agent-metrics extract a80e24f -f summary    # Human-readable
 
-# Human-readable summary
-agent-metrics extract a80e24f --format summary
+# Multiple agents (batch) — outputs JSON array
+agent-metrics extract a7c642b a03c37d af0c1a1
 
-# Tracker-compatible format
-agent-metrics extract a80e24f --format tracker --agent-name prompt-quality-validator
+# Tracker-ready format (for mcp__uluops-tracker__update_run)
+agent-metrics extract a7c642b -f tracker --agent-name code-validator
+
+# Batch tracker format with named mapping
+agent-metrics extract a7c642b a03c37d af0c1a1 \
+    -f tracker \
+    --agent-names "code-validator,test-architect,security-analyst"
 ```
 
 ### Compare Multiple Agents
@@ -114,25 +123,17 @@ agent-metrics extract a80e24f --format tracker --agent-name prompt-quality-valid
 agent-metrics compare a5b1804 ac51171 a0a96d3 a80e24f
 ```
 
-Output:
-```
-Agent Comparison
-══════════════════════════════════════════════════════════════════════════════════════════
-
-Agent ID   │  Duration  │  Effective   │  Output   │  Tools  │  Errors  │  Model
-──────────────────────────────────────────────────────────────────────────────────────────
-a5b1804     │  1m 32s    │  33.6k       │  100      │      1  │       0  │  sonnet-4-5
-ac51171     │  4m 38s    │  190.5k      │  1.8k     │     31  │       0  │  sonnet-4-5
-a0a96d3     │  2m 19s    │  165.5k      │  548      │     16  │       0  │  opus-4-5
-a80e24f     │  1m 53s    │  65.4k       │  1.5k     │     13  │       0  │  sonnet-4-5
-──────────────────────────────────────────────────────────────────────────────────────────
-TOTAL       │  10m 24s   │  455.0k      │  4.0k     │     61  │       0  │
-```
-
 ### Find Agent File Location
 
 ```bash
 agent-metrics find a80e24f
+```
+
+### List Recent Agent Runs (from disk)
+
+```bash
+agent-metrics list
+agent-metrics list -n 20
 ```
 
 ## Output Formats
@@ -150,6 +151,7 @@ Complete metrics object:
   "git_branch": "main",
   "cwd": "/home/user/project",
   "claude_code_version": "2.0.76",
+  "prompt_id": "31853822-649f-45aa-a7ae-0027726335c5",
   "start_time": "2026-01-07T20:07:03.733Z",
   "end_time": "2026-01-07T20:08:56.859Z",
   "duration_ms": 113126,
@@ -482,7 +484,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | `status` | Show buffer statistics (alias for `buffer status`) |
 | `report [-n limit] [-s session] [--current]` | Show recent auto-captured metrics in table format |
 | `list [-n <limit>]` | List recent agent runs from session files |
-| `extract <id> [-f format] [-a agent-name]` | Extract metrics for a specific agent |
+| `extract <ids...> [-f format] [--json] [-a agent-name] [--agent-names names]` | Extract metrics for one or more agents |
 | `compare <id...>` | Compare multiple agents side-by-side |
 | `find <id>` | Find the file location for an agent |
 | `examples` | Show usage examples for common workflows |
@@ -681,6 +683,10 @@ npm link
 - [x] Global installation via npm link
 - [x] Auto-capture via SubagentStop hook
 - [x] Global buffer with TTL-based expiry
+- [x] Agent name auto-detection in report
+- [x] Cache hit rate visibility
+- [x] Batch extract with tracker-ready output
+- [x] Workflow grouping by prompt_id
 - [ ] npm publish for `npm install -g @uluops/agent-metrics`
 - [ ] Redis backend for distributed buffer
 - [ ] MCP server integration

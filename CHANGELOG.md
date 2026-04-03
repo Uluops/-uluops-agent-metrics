@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-02
+
+### Added
+
+- **Agent Name column** in report — auto-detected from `[agent:name]` tags, pattern matching, or project directory fallback
+- **Cache% column** in report — shows cache hit rate per agent (`cache_read / total * 100`)
+- **Batch extract** — `agent-metrics extract id1 id2 id3` accepts multiple agent IDs, outputs combined JSON array
+- **`--json` flag** — alias for `-f json` on extract command (universal CLI convention)
+- **`--agent-names` flag** — comma-separated names for batch tracker format: `extract id1 id2 -f tracker --agent-names "code-validator,test-architect"`
+- **Workflow grouping** in report — agents sharing the same `prompt_id` (spawned from same user message) are grouped with box-drawing header showing agent count and total duration/tokens
+- **`prompt_id` field** on `AgentMetrics` and `BufferEntry` — extracted from first transcript message for workflow grouping
+- **Comprehensive `examples` command** — rewritten with Quick Start, Tracker Integration workflow, column documentation, and output format examples
+
+### Changed
+
+- Report project column shows last path segment fully (`ops-uluops-api`) instead of truncated 2-segment path
+- Report table width increased from 85 to 110 chars for Agent Name and Cache% columns
+- Extract command now variadic: `<agent-id>` → `<agent-ids...>`
+- Tracker format batch output: single object for 1 agent, JSON array for multiple
+
 ## [0.1.0] - 2026-03-08
 
 ### Added
