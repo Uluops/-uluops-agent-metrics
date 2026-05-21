@@ -687,7 +687,7 @@ npm link
 - [x] Cache hit rate visibility
 - [x] Batch extract with tracker-ready output
 - [x] Workflow grouping by prompt_id
-- [ ] npm publish for `npm install -g @uluops/agent-metrics`
+- [x] npm publish for `npm install -g @uluops/agent-metrics`
 - [ ] Redis backend for distributed buffer
 - [ ] MCP server integration
 - [ ] Historical trend analysis
