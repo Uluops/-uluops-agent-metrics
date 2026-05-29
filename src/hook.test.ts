@@ -16,10 +16,9 @@ import {
   isValidAgentId,
   extractAgentIdFromPath,
   detectAgentName,
-  matchAgentPattern,
+  extractExplicitAgentTag,
   getFirstUserMessageContent,
   AGENT_ID_PATTERN,
-  AGENT_PATTERNS,
 } from './hook.js';
 
 // Test configuration with isolated temp directory
@@ -144,115 +143,31 @@ describe('Hook Module', () => {
       return filePath;
     }
 
-    it('should detect code-validator', async () => {
-      const filePath = createTestTranscript('Run code-validator on this directory');
+    it('should detect [agent:name] explicit tag', async () => {
+      const filePath = createTestTranscript('[agent:code-validator] Validate code quality');
       const result = await detectAgentName(filePath);
       assert.strictEqual(result, 'code-validator');
     });
 
-    it('should detect code validator with space', async () => {
-      const filePath = createTestTranscript('Run code validator on this');
+    it('should not detect legacy [validator:name] tag', async () => {
+      const filePath = createTestTranscript('[validator:test-architect] Check tests');
       const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'code-validator');
+      assert.strictEqual(result, null);
     });
 
-    it('should detect codevalidator without separator', async () => {
-      const filePath = createTestTranscript('Run codevalidator now');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'code-validator');
-    });
-
-    it('should be case insensitive', async () => {
-      const filePath = createTestTranscript('Run CODE-VALIDATOR now');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'code-validator');
-    });
-
-    it('should detect test-architect', async () => {
-      const filePath = createTestTranscript('Validate test quality with test-architect');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'test-architect');
-    });
-
-    it('should detect security-analyst', async () => {
-      const filePath = createTestTranscript('Run security analyst on the codebase');
+    it('should detect tag mid-content', async () => {
+      const filePath = createTestTranscript('Please [agent:security-analyst] review the auth flow');
       const result = await detectAgentName(filePath);
       assert.strictEqual(result, 'security-analyst');
     });
 
-    it('should detect type-safety-validator', async () => {
-      const filePath = createTestTranscript('Check type safety for this project');
+    it('should return null when only a bare agent name appears (no tag)', async () => {
+      const filePath = createTestTranscript('Run code-validator on this directory');
       const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'type-safety-validator');
+      assert.strictEqual(result, null);
     });
 
-    it('should detect frontend-validator', async () => {
-      const filePath = createTestTranscript('Run frontend validator');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'frontend-validator');
-    });
-
-    it('should detect public-interface-validator', async () => {
-      const filePath = createTestTranscript('Check public interface');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'public-interface-validator');
-    });
-
-    it('should detect api-contract-validator', async () => {
-      const filePath = createTestTranscript('Validate api contract');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'api-contract-validator');
-    });
-
-    it('should detect mcp-validator', async () => {
-      const filePath = createTestTranscript('Run MCP validator on the server');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'mcp-validator');
-    });
-
-    it('should detect code-optimizer', async () => {
-      const filePath = createTestTranscript('Run code optimizer');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'code-optimizer');
-    });
-
-    it('should detect code-auditor', async () => {
-      const filePath = createTestTranscript('Run code auditor');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'code-auditor');
-    });
-
-    it('should detect prompt-engineer', async () => {
-      const filePath = createTestTranscript('Run prompt engineer validation');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'prompt-engineer');
-    });
-
-    it('should detect prompt-pattern-analyzer', async () => {
-      const filePath = createTestTranscript('Analyze prompt patterns');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'prompt-pattern-analyzer');
-    });
-
-    it('should detect prompt-quality-validator', async () => {
-      const filePath = createTestTranscript('Check prompt quality');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'prompt-quality-validator');
-    });
-
-    it('should detect data-science', async () => {
-      const filePath = createTestTranscript('Run data science agent');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'data-science');
-    });
-
-    it('should detect ml-algorithms', async () => {
-      const filePath = createTestTranscript('Analyze ML algorithm implementation');
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'ml-algorithms');
-    });
-
-    it('should return null when no validator pattern matches', async () => {
+    it('should return null when no tag is present', async () => {
       const filePath = createTestTranscript('Just do some regular work please');
       const result = await detectAgentName(filePath);
       assert.strictEqual(result, null);
@@ -290,33 +205,24 @@ describe('Hook Module', () => {
         }),
         JSON.stringify({
           type: 'user',
-          message: { role: 'user', content: 'Now run code-validator' },
+          message: { role: 'user', content: '[agent:code-validator] Now run validation' },
         }),
       ];
       fs.writeFileSync(filePath, lines.join('\n') + '\n');
 
       const result = await detectAgentName(filePath);
-      // Should NOT detect code-validator because it's in the second user message
+      // Should NOT detect code-validator because the tag is in the second user message
       assert.strictEqual(result, null);
     });
 
-    it('should handle ~ path expansion', async () => {
-      // Create file in test dir and reference with relative-like path
-      const filePath = createTestTranscript('Run test-architect');
-
-      // The function should work with the actual path
-      const result = await detectAgentName(filePath);
-      assert.strictEqual(result, 'test-architect');
-    });
-
-    it('should handle content as array', async () => {
+    it('should handle content as array with tag', async () => {
       const filePath = path.join(TEST_DIR, 'array-content.jsonl');
       const content = JSON.stringify({
         type: 'user',
         message: {
           role: 'user',
           content: [
-            { type: 'text', text: 'Please run the security analyst' },
+            { type: 'text', text: '[agent:security-analyst] Review auth' },
           ],
         },
       });
@@ -327,77 +233,28 @@ describe('Hook Module', () => {
     });
   });
 
-  describe('matchAgentPattern', () => {
-    it('should match known validators', () => {
-      assert.strictEqual(matchAgentPattern('Run code-validator'), 'code-validator');
-      assert.strictEqual(matchAgentPattern('Check type safety'), 'type-safety-validator');
-      assert.strictEqual(matchAgentPattern('Run security analyst'), 'security-analyst');
+  describe('extractExplicitAgentTag', () => {
+    it('should extract from [agent:name]', () => {
+      assert.strictEqual(extractExplicitAgentTag('[agent:code-validator] do work'), 'code-validator');
     });
 
-    it('should return null for no match', () => {
-      assert.strictEqual(matchAgentPattern('Hello world'), null);
-      assert.strictEqual(matchAgentPattern(''), null);
-      assert.strictEqual(matchAgentPattern('Just some random text'), null);
+    it('should not extract from legacy [validator:name]', () => {
+      assert.strictEqual(extractExplicitAgentTag('[validator:test-architect] do work'), null);
     });
 
-    it('should be case insensitive', () => {
-      assert.strictEqual(matchAgentPattern('CODE-VALIDATOR'), 'code-validator');
-      assert.strictEqual(matchAgentPattern('Test Architect'), 'test-architect');
+    it('should lowercase the result', () => {
+      assert.strictEqual(extractExplicitAgentTag('[AGENT:Code-Validator] work'), 'code-validator');
     });
 
-    it('should accept custom patterns', () => {
-      const customPatterns: Array<readonly [RegExp, string]> = [
-        [/custom-validator/i, 'my-custom'],
-      ];
-      assert.strictEqual(matchAgentPattern('Run custom-validator', customPatterns), 'my-custom');
-      assert.strictEqual(matchAgentPattern('code-validator', customPatterns), null);
-    });
-  });
-
-  describe('AGENT_PATTERNS ordering', () => {
-    it('should match code-auditor before code-validator', () => {
-      // Both contain "code", but auditor should match first
-      const auditorResult = matchAgentPattern('Run code-auditor on this');
-      assert.strictEqual(auditorResult, 'code-auditor');
-
-      // code-validator should still work on its own
-      const validatorResult = matchAgentPattern('Run code-validator on this');
-      assert.strictEqual(validatorResult, 'code-validator');
+    it('should return null when no tag is present', () => {
+      assert.strictEqual(extractExplicitAgentTag('code-validator please'), null);
+      assert.strictEqual(extractExplicitAgentTag(''), null);
     });
 
-    it('should match code-optimizer before code-validator', () => {
-      const optimizerResult = matchAgentPattern('Run code-optimizer');
-      assert.strictEqual(optimizerResult, 'code-optimizer');
-    });
-
-    it('should match prompt-pattern before prompt-engineer', () => {
-      // prompt-pattern-analyzer is more specific
-      const patternResult = matchAgentPattern('Analyze prompt patterns');
-      assert.strictEqual(patternResult, 'prompt-pattern-analyzer');
-
-      // prompt-engineer should still work
-      const engineerResult = matchAgentPattern('Run prompt engineer');
-      assert.strictEqual(engineerResult, 'prompt-engineer');
-    });
-
-    it('should match prompt-quality before prompt-engineer', () => {
-      const qualityResult = matchAgentPattern('Check prompt quality');
-      assert.strictEqual(qualityResult, 'prompt-quality-validator');
-    });
-
-    it('should have documented categories in correct order', () => {
-      // Verify that more specific patterns come before general ones in the array
-      const codeAuditorIdx = AGENT_PATTERNS.findIndex(([, name]) => name === 'code-auditor');
-      const codeValidatorIdx = AGENT_PATTERNS.findIndex(([, name]) => name === 'code-validator');
-      const codeOptimizerIdx = AGENT_PATTERNS.findIndex(([, name]) => name === 'code-optimizer');
-
-      assert.ok(codeAuditorIdx < codeValidatorIdx, 'code-auditor should come before code-validator');
-      assert.ok(codeOptimizerIdx < codeValidatorIdx, 'code-optimizer should come before code-validator');
-
-      const promptPatternIdx = AGENT_PATTERNS.findIndex(([, name]) => name === 'prompt-pattern-analyzer');
-      const promptEngineerIdx = AGENT_PATTERNS.findIndex(([, name]) => name === 'prompt-engineer');
-
-      assert.ok(promptPatternIdx < promptEngineerIdx, 'prompt-pattern-analyzer should come before prompt-engineer');
+    it('should reject malformed tags', () => {
+      assert.strictEqual(extractExplicitAgentTag('[agent:]'), null);
+      assert.strictEqual(extractExplicitAgentTag('[agent: name]'), null);
+      assert.strictEqual(extractExplicitAgentTag('agent:name'), null);
     });
   });
 

@@ -594,12 +594,21 @@ Add the hook to `~/.claude/settings.json`:
 
 ### Agent Detection
 
-The hook auto-detects agent names from the task prompt:
-- `code-validator`, `test-architect`, `security-analyst`
-- `type-safety-validator`, `frontend-validator`, `public-interface-validator`
-- `api-contract-validator`, `mcp-validator`, `adl-meta-validator`
-- `code-optimizer`, `data-science`, `ml-algorithms`
-- And 20+ more agents
+The hook detects the agent name from an explicit tag in the first user
+message of the transcript:
+
+```
+[agent:code-validator] Validate code quality on this directory
+```
+
+Tag matching is case-insensitive; the resulting name is lowercased.
+
+Untagged invocations are not name-detected — the report falls back to the
+project directory name. Workflow commands emit tags automatically; direct
+user invocations can include a tag manually.
+
+See `docs/decisions/0001-explicit-tag-detection.md` for the rationale
+(hardcoded pattern enumeration was removed in v0.4.0).
 
 ### Buffer Commands
 

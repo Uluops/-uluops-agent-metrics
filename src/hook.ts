@@ -74,74 +74,6 @@ const MAX_STDIN_BYTES = 1 * 1024 * 1024; // 1MB max stdin to prevent memory exha
 export const AGENT_ID_PATTERN = /^[a-f0-9]+$/;
 
 /**
- * Agent pattern entry: [regex pattern, canonical agent name]
- *
- * ORDERING: Patterns are matched in order. More specific patterns should come
- * before general ones to ensure correct matching. For example, "code-auditor"
- * must come before "code-validator" since both contain "code".
- */
-export type AgentPattern = readonly [RegExp, string];
-
-/**
- * Known agent patterns for auto-detection from task prompts.
- *
- * ## Ordering Rationale
- *
- * Patterns are matched in array order - the FIRST match wins. This means:
- * - More specific patterns MUST come before less specific ones
- * - "code-auditor" must precede "code-validator" (both contain "code")
- * - "prompt-pattern" must precede "prompt-engineer" (both contain "prompt")
- *
- * If ordering is wrong, a prompt mentioning "code-auditor" would incorrectly
- * match "code-validator" first.
- *
- * ## Categories (in order)
- *
- * 1. Code quality (auditor → optimizer → validator)
- * 2. Security/API
- * 3. Frontend/Publishing
- * 4. Prompt/ADL (pattern → quality → engineer)
- * 5. Infrastructure
- * 6. Domain-specific
- */
-export const AGENT_PATTERNS: readonly AgentPattern[] = [
-  // Code quality - ordered by specificity
-  [/code.?auditor/i, 'code-auditor'],
-  [/code.?optimizer/i, 'code-optimizer'],
-  [/code.?validator/i, 'code-validator'],
-  [/test.?architect/i, 'test-architect'],
-  [/type.?safety/i, 'type-safety-validator'],
-
-  // Security and API
-  [/security.?analyst/i, 'security-analyst'],
-  [/api.?contract/i, 'api-contract-validator'],
-  [/mcp.?validator/i, 'mcp-validator'],
-
-  // Frontend
-  [/frontend.?validator/i, 'frontend-validator'],
-  [/public.?interface/i, 'public-interface-validator'],
-  [/dx.?validator/i, 'dx-validator'],
-  [/release.?readiness/i, 'release-readiness'],
-
-  // Prompt and ADL - ordered by specificity
-  [/prompt.?pattern/i, 'prompt-pattern-analyzer'],
-  [/prompt.?quality/i, 'prompt-quality-validator'],
-  [/prompt.?engineer/i, 'prompt-engineer'],
-  [/adl.?meta/i, 'adl-meta-validator'],
-
-  // Infrastructure
-  [/docker.?validator/i, 'docker-validator'],
-  [/kubernetes.?validator/i, 'kubernetes-validator'],
-  [/sql.?validator/i, 'sql-validator'],
-  [/python.?validator/i, 'python-validator'],
-  [/websocket.?validator/i, 'websocket-validator'],
-
-  // Domain-specific
-  [/data.?science/i, 'data-science'],
-  [/ml.?algorithm/i, 'ml-algorithms'],
-] as const;
-
-/**
  * Validate that a string is a valid agent ID format.
  *
  * @param agentId - The agent ID to validate
@@ -159,26 +91,6 @@ export function extractAgentIdFromPath(transcriptPath: string): string | null {
   const filename = path.basename(transcriptPath);
   const match = filename.match(/^agent-([a-f0-9]+)\.jsonl$/);
   return match?.[1] ?? null;
-}
-
-/**
- * Match content against validator patterns.
- * Returns the first matching validator name, or null if no match.
- *
- * @param content - The text content to search
- * @param patterns - Agent patterns to match against (uses AGENT_PATTERNS if not provided)
- * @returns The matched validator name, or null
- */
-export function matchAgentPattern(
-  content: string,
-  patterns: readonly AgentPattern[] = AGENT_PATTERNS
-): string | null {
-  for (const [pattern, name] of patterns) {
-    if (pattern.test(content)) {
-      return name;
-    }
-  }
-  return null;
 }
 
 /**
@@ -226,20 +138,20 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
 }
 
 /**
- * Pattern for explicit agent tag: [agent:name] or [validator:name] (legacy)
- * This is the highest-priority detection method, used by workflow commands
- * to explicitly declare which agent is being invoked.
+ * Pattern for explicit agent tag: [agent:name]
+ *
+ * The tag is the sole detection signal; workflow commands emit it on every
+ * agent invocation. Direct user invocations may include it manually.
  *
  * Example: "[agent:code-validator] Validate code quality..."
  */
-export const EXPLICIT_AGENT_TAG_PATTERN = /\[(?:agent|validator):([a-z][a-z0-9-]*)\]/i;
+export const EXPLICIT_AGENT_TAG_PATTERN = /\[agent:([a-z][a-z0-9-]*)\]/i;
 
 /**
- * Extract agent name from explicit tag in content.
- * Looks for pattern: [agent:name] or [validator:name] (legacy)
+ * Extract agent name from an explicit `[agent:name]` tag in content.
  *
  * @param content - The text content to search
- * @returns The extracted validator name, or null if no tag found
+ * @returns The extracted agent name (lowercased), or null if no tag found
  */
 export function extractExplicitAgentTag(content: string): string | null {
   const match = content.match(EXPLICIT_AGENT_TAG_PATTERN);
@@ -247,28 +159,23 @@ export function extractExplicitAgentTag(content: string): string | null {
 }
 
 /**
- * Detect validator name from the first user message in transcript.
- * Uses two-tier detection:
- * 1. Explicit tag: [agent:name] or [validator:name] (highest priority)
- * 2. Pattern matching: AGENT_PATTERNS (fallback)
+ * Detect agent name from the first user message in transcript.
+ *
+ * Detection is explicit-tag-only: the first user message must contain
+ * `[agent:name]`. Untagged invocations return null and the consumer falls
+ * back to the project name or agent ID.
+ *
+ * See docs/decisions/0001-explicit-tag-detection.md for the rationale.
  *
  * @param transcriptPath - Path to the agent transcript file (may start with ~)
- * @returns The detected validator name, or null if not found
+ * @returns The tagged agent name, or null if no tag is present
  */
 export async function detectAgentName(transcriptPath: string): Promise<string | null> {
   const content = await getFirstUserMessageContent(transcriptPath);
   if (!content) {
     return null;
   }
-
-  // First try explicit tag (highest priority)
-  const explicitName = extractExplicitAgentTag(content);
-  if (explicitName) {
-    return explicitName;
-  }
-
-  // Fall back to pattern matching
-  return matchAgentPattern(content);
+  return extractExplicitAgentTag(content);
 }
 
 /**

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-29
+
+### Changed
+
+- **Breaking: agent detection is explicit-tag-only.** `detectAgentName`
+  now returns the value of an `[agent:name]` tag in the first user
+  message, or `null`. The 22-entry hardcoded `AGENT_PATTERNS` table is
+  removed (the ecosystem has grown to 189+ agents; an enumerated list no
+  longer represents reality). See `docs/decisions/0001-explicit-tag-detection.md`.
+- **Breaking: legacy `[validator:name]` tag form is no longer recognized.**
+  Workflow commands have emitted `[agent:...]` since the March 2026
+  rename; accepting the old form preserved naming drift the Confucius
+  forecaster flagged at that migration.
+- Removed `AGENT_PATTERNS`, `AgentPattern`, and `matchAgentPattern` from
+  `hook.ts` (none were re-exported from `index.ts` — internal only).
+
+### Added
+
+- `docs/decisions/` with three ADRs (explicit-tag detection, JSONL
+  buffer, sync lock).
+
 ## [0.3.1] - 2026-05-28
 
 ### Fixed
