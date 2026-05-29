@@ -53,7 +53,6 @@ export function registerCoreCommands(program: Command): void {
         const nameList = options.agentNames?.split(',').map(n => n.trim());
 
         // Batch extract
-        const results: Array<{ agentId: string; metrics: ReturnType<typeof toTrackerFormat> extends infer T ? T : never } | null> = [];
         const jsonResults: unknown[] = [];
 
         for (let i = 0; i < agentIds.length; i++) {

@@ -688,7 +688,7 @@ npm link
 - [x] Batch extract with tracker-ready output
 - [x] Workflow grouping by prompt_id
 - [x] npm publish for `npm install -g @uluops/agent-metrics`
-- [ ] Redis backend for distributed buffer
-- [ ] MCP server integration
-- [ ] Historical trend analysis
-- [ ] Cost estimation based on token pricing
+- [ ] Redis backend for distributed buffer *(Planned — no timeline)*
+- [ ] MCP server integration *(Planned — no timeline)*
+- [ ] Historical trend analysis *(Planned — no timeline)*
+- [ ] Cost estimation based on token pricing *(Planned — no timeline)*

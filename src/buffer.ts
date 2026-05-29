@@ -109,14 +109,6 @@ function isValidBufferEntry(obj: unknown): obj is BufferEntry {
   // Check metrics object exists
   if (!entry.metrics || typeof entry.metrics !== 'object') return false;
 
-  // Backfill end_time from metrics if missing (backwards compatibility)
-  if (!entry.end_time && entry.metrics) {
-    const metrics = entry.metrics as Record<string, unknown>;
-    if (typeof metrics.end_time === 'string') {
-      entry.end_time = metrics.end_time;
-    }
-  }
-
   return true;
 }
 
@@ -240,6 +232,10 @@ export function readBuffer(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[]
     try {
       const parsed = JSON.parse(line);
       if (isValidBufferEntry(parsed)) {
+        // Backfill end_time from metrics if missing (backwards compatibility)
+        if (!parsed.end_time && typeof parsed.metrics.end_time === 'string') {
+          parsed.end_time = parsed.metrics.end_time;
+        }
         entries.push(parsed);
       } else {
         process.stderr.write('Warning: Skipping buffer entry with missing required fields\n');

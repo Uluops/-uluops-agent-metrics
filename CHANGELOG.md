@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-28
+
+### Fixed
+
+- **Claude Code 2.1.145 compatibility** — `slug` field was dropped from subagent transcript messages starting in Claude Code 2.1.145, causing every message to fail the extractor's validator and the SubagentStop hook to silently produce no buffer entries. `slug` is now optional on `RawAgentMessage`; `AgentMetrics.slug` falls back to `agentId` when absent. Regression test added.
+
 ## [0.3.0] - 2026-04-02
 
 ### Added

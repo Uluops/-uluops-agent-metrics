@@ -23,7 +23,7 @@ import {
   type CompareItem,
   type LogDisplayStats,
 } from './formatters.js';
-import type { BufferEntry } from '../buffer.js';
+import type { BufferEntry, BufferStats } from '../buffer.js';
 import type { AgentMetrics } from '../types.js';
 
 // Test configuration with isolated temp directory
@@ -83,6 +83,23 @@ function createMockBufferEntry(overrides: Partial<BufferEntry> = {}): BufferEntr
   };
 }
 
+/**
+ * Create a mock BufferStats object for testing
+ */
+function createMockBufferStats(overrides: Partial<BufferStats> = {}): BufferStats {
+  return {
+    totalEntries: 0,
+    validEntries: 0,
+    expiredEntries: 0,
+    uniqueSessions: 0,
+    uniqueAgents: 0,
+    oldestEntry: null,
+    newestEntry: null,
+    bufferSizeBytes: 0,
+    ...overrides,
+  };
+}
+
 describe('Display Formatters', () => {
   before(() => {
     fs.mkdirSync(TEST_DIR, { recursive: true });
@@ -94,7 +111,7 @@ describe('Display Formatters', () => {
 
   describe('formatBufferStatus', () => {
     it('should include title and all expected fields', () => {
-      const result = formatBufferStatus('Test Buffer Status');
+      const result = formatBufferStatus('Test Buffer Status', createMockBufferStats());
 
       assert.ok(result.includes('Test Buffer Status'), 'Should include the title');
       assert.ok(result.includes('Total entries:'), 'Should include total entries');
@@ -107,7 +124,7 @@ describe('Display Formatters', () => {
     });
 
     it('should include separator line', () => {
-      const result = formatBufferStatus('Status');
+      const result = formatBufferStatus('Status', createMockBufferStats());
       assert.ok(result.includes('═'), 'Should include separator line');
     });
   });

@@ -108,7 +108,7 @@ export interface RawAgentMessage {
   version: string;
   gitBranch: string;
   agentId: string;
-  slug: string;
+  slug?: string;
   type: 'user' | 'assistant' | 'tool_result';
   message?: {
     role: string;
@@ -128,6 +128,7 @@ export interface RawAgentMessage {
   uuid: string;
   timestamp: string;
   requestId?: string;
+  promptId?: string;
 }
 
 /**

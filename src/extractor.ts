@@ -45,7 +45,7 @@ function isValidAgentMessage(obj: unknown): obj is RawAgentMessage {
   // Required for first message: session metadata
   if (!hasStringProperty(msg, 'agentId')) return false;
   if (!hasStringProperty(msg, 'sessionId')) return false;
-  if (!hasStringProperty(msg, 'slug')) return false;
+  // `slug` was dropped from subagent transcripts in Claude Code 2.1.145; treat as optional
   if (!hasStringProperty(msg, 'cwd')) return false;
   if (!hasStringProperty(msg, 'version')) return false;
   if (!hasStringProperty(msg, 'gitBranch')) return false;
@@ -166,14 +166,12 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
   return {
     agent_id: first.agentId,
     session_id: first.sessionId,
-    slug: first.slug,
+    slug: first.slug ?? first.agentId,
     model: acc.models.size > 0 ? acc.models.values().next().value! : 'unknown',
     git_branch: first.gitBranch,
     cwd: first.cwd,
     claude_code_version: first.version,
-    prompt_id: typeof (first as unknown as Record<string, unknown>).promptId === 'string'
-      ? (first as unknown as Record<string, unknown>).promptId as string
-      : null,
+    prompt_id: typeof first.promptId === 'string' ? first.promptId : null,
     start_time: first.timestamp,
     end_time: last.timestamp,
     duration_ms: durationMs,

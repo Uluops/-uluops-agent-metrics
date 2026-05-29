@@ -81,10 +81,14 @@ export function registerLogCommands(program: Command): void {
             if (currentSize > lastSize) {
               // Read only the new bytes appended since last check
               const fd = fs.openSync(config.logPath, 'r');
-              const newBytes = Buffer.alloc(currentSize - lastSize);
-              fs.readSync(fd, newBytes, 0, newBytes.length, lastSize);
-              fs.closeSync(fd);
-              const newContent = newBytes.toString('utf-8');
+              let newContent: string;
+              try {
+                const newBytes = Buffer.alloc(currentSize - lastSize);
+                fs.readSync(fd, newBytes, 0, newBytes.length, lastSize);
+                newContent = newBytes.toString('utf-8');
+              } finally {
+                fs.closeSync(fd);
+              }
               newContent.split('\n').forEach((line) => {
                 if (line.trim()) console.log(line);
               });

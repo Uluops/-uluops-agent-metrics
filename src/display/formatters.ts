@@ -16,8 +16,8 @@ import type { AgentMetrics } from '../types.js';
  * @param stats - Buffer statistics to format (fetched live if not provided)
  * @returns Formatted string ready for console output
  */
-export function formatBufferStatus(title: string, stats?: BufferStats): string {
-  const s = stats ?? getBufferStats();
+export function formatBufferStatus(title: string, stats: BufferStats): string {
+  const s = stats;
   const lines: string[] = [];
 
   lines.push(title);
@@ -47,7 +47,8 @@ export function formatBufferStatus(title: string, stats?: BufferStats): string {
  * @param title - Title to display at the top of the output
  */
 export function displayBufferStatus(title: string): void {
-  console.log(formatBufferStatus(title));
+  const stats = getBufferStats();
+  console.log(formatBufferStatus(title, stats));
 }
 
 /**

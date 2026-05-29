@@ -533,7 +533,7 @@ describe('Extractor Module', () => {
       // Append valid JSON but without required agent message fields
       const invalidLines = [
         '{"type":"assistant","timestamp":"2026-01-01T00:00:00Z"}', // missing agentId, sessionId, etc
-        '{"agentId":"a","sessionId":"s","type":"user"}', // missing timestamp, slug, etc
+        '{"agentId":"a","sessionId":"s","type":"user"}', // missing timestamp, cwd, version, gitBranch
       ].join('\n');
       fs.writeFileSync(filePath, validContent + '\n' + invalidLines + '\n');
 
@@ -547,6 +547,34 @@ describe('Extractor Module', () => {
       } finally {
         process.stderr.write = origWrite;
       }
+    });
+
+    it('should accept messages without slug (Claude Code 2.1.145+ format)', async () => {
+      // Claude Code 2.1.145 dropped the `slug` field from subagent transcript messages.
+      // The extractor must still parse these and fall back to agentId for the slug.
+      const filePath = path.join(TEST_DIR, 'no-slug.jsonl');
+      const slugless = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-05-28T23:12:46.877Z',
+        agentId: 'abc1234567890def0',
+        sessionId: 'session-xyz',
+        cwd: '/tmp',
+        version: '2.1.145',
+        gitBranch: 'main',
+        message: {
+          role: 'assistant',
+          content: [],
+          model: 'claude-opus-4-7',
+          usage: { input_tokens: 10, output_tokens: 20 },
+        },
+      });
+      fs.writeFileSync(filePath, slugless + '\n' + slugless + '\n');
+
+      const metrics = await extractMetricsFromFile(filePath);
+      assert.ok(metrics, 'Should extract metrics from slug-less transcript');
+      assert.strictEqual(metrics.agent_id, 'abc1234567890def0');
+      assert.strictEqual(metrics.slug, 'abc1234567890def0', 'slug should fall back to agentId');
+      assert.strictEqual(metrics.claude_code_version, '2.1.145');
     });
 
     it('should count message count correctly', async () => {
