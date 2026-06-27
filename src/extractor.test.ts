@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import {
   extractMetricsFromFile,
+  extractAgentMetrics,
   extractMultipleAgentMetrics,
   formatMetricsSummary,
   toTrackerFormat,
@@ -144,6 +145,8 @@ function createSampleJSONL(options: {
 }
 
 describe('Extractor Module', () => {
+  const originalEnv = { ...process.env };
+
   before(() => {
     // Create test directory
     fs.mkdirSync(TEST_DIR, { recursive: true });
@@ -152,6 +155,7 @@ describe('Extractor Module', () => {
   after(() => {
     // Cleanup test directory
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
+    process.env = originalEnv;
   });
 
   describe('extractMetricsFromFile', () => {
@@ -162,6 +166,7 @@ describe('Extractor Module', () => {
       const metrics = await extractMetricsFromFile(filePath);
 
       assert.ok(metrics);
+      assert.strictEqual(metrics.provider, 'claude');
       assert.strictEqual(metrics.agent_id, 'test-agent-123');
       assert.strictEqual(metrics.session_id, 'session-uuid-456');
       assert.strictEqual(metrics.model, 'claude-sonnet-4-5-20250929');
@@ -470,6 +475,15 @@ describe('Extractor Module', () => {
       );
     });
 
+    it('should wrap missing file errors with package guidance', async () => {
+      const filePath = path.join(TEST_DIR, 'missing-agent.jsonl');
+
+      await assert.rejects(
+        () => extractMetricsFromFile(filePath),
+        /Unable to read agent metrics file/
+      );
+    });
+
     it('should handle file with only whitespace', async () => {
       const filePath = path.join(TEST_DIR, 'whitespace.jsonl');
       fs.writeFileSync(filePath, '   \n\n   \n');
@@ -584,6 +598,78 @@ describe('Extractor Module', () => {
       const metrics = await extractMetricsFromFile(filePath);
 
       assert.strictEqual(metrics.execution.message_count, 10);
+    });
+  });
+
+  describe('extractAgentMetrics provider dispatch', () => {
+    it('routes UUIDv7 agent IDs to Codex in auto mode', async () => {
+      const codexHome = path.join(TEST_DIR, 'codex-home');
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '06', '08');
+      const agentId = '019eaa28-8e2d-73a2-840f-a00d6cc8795f';
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionsDir, `rollout-2026-06-08T16-14-05-${agentId}.jsonl`), [
+        JSON.stringify({
+          timestamp: '2026-06-08T16:14:05.000Z',
+          type: 'session_meta',
+          payload: {
+            id: agentId,
+            parent_thread_id: '019eaa27-f755-7cb2-84fa-bd1aa685d69e',
+            cwd: '/test/project',
+            cli_version: '0.137.0',
+            thread_source: 'subagent',
+            timestamp: '2026-06-08T16:14:05.000Z',
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-08T16:14:06.000Z',
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              total_token_usage: {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                output_tokens: 3,
+                reasoning_output_tokens: 1,
+                total_tokens: 14,
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-08T16:14:07.000Z',
+          type: 'event_msg',
+          payload: { type: 'task_complete', duration_ms: 2000 },
+        }),
+      ].join('\n'));
+
+      process.env.CODEX_HOME = codexHome;
+
+      const metrics = await extractAgentMetrics(agentId);
+
+      assert.ok(metrics);
+      assert.strictEqual(metrics.provider, 'codex');
+      assert.strictEqual(metrics.tokens.total_effective, 12);
+    });
+
+    it('routes non-UUIDv7 IDs to Claude in auto mode', async () => {
+      const claudeHome = path.join(TEST_DIR, 'claude-home');
+      const projectDir = path.join(claudeHome, '.claude', 'projects', '-test-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'agent-abc1234.jsonl'), createSampleJSONL({ agentId: 'abc1234' }));
+      process.env.HOME = claudeHome;
+
+      const metrics = await extractAgentMetrics('abc1234');
+
+      assert.ok(metrics);
+      assert.strictEqual(metrics.provider, 'claude');
+      assert.strictEqual(metrics.agent_id, 'abc1234');
+    });
+
+    it('honors explicit provider override', async () => {
+      const metrics = await extractAgentMetrics('abc1234', { provider: 'codex' });
+
+      assert.strictEqual(metrics, null);
     });
   });
 

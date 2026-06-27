@@ -71,5 +71,27 @@ describe('Status Commands', () => {
 
       assert.strictEqual(harness.exitCode, null, 'Should not exit with error');
     });
+
+    it('should reject Codex provider with explicit guidance', async () => {
+      try {
+        await program.parseAsync(['node', 'test', 'report', '--provider', 'codex']);
+        assert.fail('Should have thrown for unsupported Codex report');
+      } catch {
+        const textOutput = output.join('\n');
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1');
+        assert.ok(textOutput.includes('list --provider codex'), 'Should point to Codex list');
+        assert.ok(textOutput.includes('extract <id> --provider codex'), 'Should point to Codex extract');
+        assert.ok(textOutput.includes('future Codex hook spec'), 'Should mention future hook direction');
+      }
+    });
+
+    it('should reject invalid provider values', async () => {
+      try {
+        await program.parseAsync(['node', 'test', 'report', '--provider', 'invalid']);
+        assert.fail('Should have thrown for invalid provider');
+      } catch {
+        assert.strictEqual(harness.exitCode, null, 'Commander should reject before process.exit override');
+      }
+    });
   });
 });

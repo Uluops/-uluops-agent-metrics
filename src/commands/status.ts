@@ -4,9 +4,10 @@
  * Top-level status and report commands for quick metrics overview.
  */
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { queryBuffer } from '../buffer.js';
 import { displayBufferStatus, formatReport } from '../display/formatters.js';
+import type { MetricsProvider } from '../types.js';
 
 /**
  * Register status commands on the program.
@@ -27,7 +28,13 @@ export function registerStatusCommands(program: Command): void {
     .option('-n, --limit <number>', 'Number of entries to show', '20')
     .option('-s, --session <id>', 'Filter by session ID')
     .option('--current', 'Show only current session')
-    .action((options: { limit: string; session?: string; current?: boolean }) => {
+    .addOption(new Option('--provider <provider>', 'Metrics provider').choices(['auto', 'claude', 'codex']).default('auto'))
+    .action((options: { limit: string; session?: string; current?: boolean; provider: MetricsProvider }) => {
+      if (options.provider === 'codex') {
+        console.error('Codex report support is not available because report is fed by the Claude Code SubagentStop hook buffer. Use `agent-metrics list --provider codex` and `agent-metrics extract <id> --provider codex` instead. A future Codex hook spec may lift this restriction.');
+        process.exit(1);
+      }
+
       let entries = queryBuffer({ includeExpired: false });
 
       if (options.current) {

@@ -4,16 +4,17 @@
 
 # Agent Metrics
 
-Extract accurate metrics from Claude Code agent session files.
+Extract accurate metrics from Claude Code and Codex agent session files.
 
 ## Overview
 
-Claude Code stores detailed execution data for every agent (Task tool) invocation in JSONL files under `~/.claude/projects/`. This utility extracts and aggregates that data to provide accurate token counts, timing, and execution statistics.
+Claude Code stores detailed execution data for every agent (Task tool) invocation in JSONL files under `~/.claude/projects/`. Codex stores local session rollouts under `~/.codex/sessions/`. This utility extracts and aggregates both formats to provide accurate token counts, timing, and execution statistics.
 
 ## Prerequisites
 
 - **Node.js 18+** — Required for ESM support
 - **Claude Code** — Agent session files are created by Claude Code's Task tool in `~/.claude/projects/`
+- **Codex** — Optional; subagent session rollouts are read from `~/.codex/sessions/` or `$CODEX_HOME/sessions/`
 
 ## Installation
 
@@ -69,17 +70,22 @@ npm uninstall -g @uluops/agent-metrics
 ### Quick Start
 
 ```bash
-# See what agents ran in the current session
-agent-metrics report --current
+# List recent Claude Code agent session files
+agent-metrics list
 
-# See all recent agent metrics
-agent-metrics report
-agent-metrics report -n 50
+# List recent Codex subagent rollouts
+agent-metrics list --provider codex
+
+# Extract metrics for a run from the list
+agent-metrics extract a80e24f -f summary
+
+# Show buffered hook captures after SubagentStop auto-capture is configured
+agent-metrics report --current
 ```
 
 Output:
-```
-Recent Agent Metrics
+```text
+Recent Agent Runs
 ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 Agent ID            │  Agent Name              │  Model      │  Duration  │  Tokens   │  Cache  │  Tools
@@ -92,8 +98,8 @@ Agent ID            │  Agent Name              │  Model      │  Duration  
 a5511f269fb53e254    │  code-auditor              │  opus-4-6    │   3m 2s    │  466k     │   88%  │     46
 ```
 
-Report columns:
-- **Agent Name** — auto-detected from `[agent:name]` tags or pattern matching; falls back to project name
+List and report columns:
+- **Agent Name** — auto-detected from `[agent:name]` tags; falls back to project name
 - **Cache%** — cache hit rate (`cache_read / (cache_read + cache_creation + input) * 100`)
 - Agents from the same conversation turn are **grouped** with a summary header
 
@@ -104,6 +110,9 @@ Report columns:
 agent-metrics extract a80e24f
 agent-metrics extract a80e24f --json        # --json alias for -f json
 agent-metrics extract a80e24f -f summary    # Human-readable
+
+# Codex subagent by UUIDv7 id
+agent-metrics extract 019eaa28-8e2d-73a2-840f-a00d6cc8795f --provider codex
 
 # Multiple agents (batch) — outputs JSON array
 agent-metrics extract a7c642b a03c37d af0c1a1
@@ -127,6 +136,7 @@ agent-metrics compare a5b1804 ac51171 a0a96d3 a80e24f
 
 ```bash
 agent-metrics find a80e24f
+agent-metrics find 019eaa28-8e2d-73a2-840f-a00d6cc8795f --provider codex
 ```
 
 ### List Recent Agent Runs (from disk)
@@ -134,7 +144,10 @@ agent-metrics find a80e24f
 ```bash
 agent-metrics list
 agent-metrics list -n 20
+agent-metrics list --provider codex
 ```
+
+Provider defaults to `auto`: UUIDv7 agent ids route to Codex, and Claude-style hex ids route to Claude. `report` remains Claude-buffer-backed in this release; use `list --provider codex` and `extract <id> --provider codex` for Codex runs.
 
 ## Output Formats
 
@@ -144,6 +157,7 @@ Complete metrics object:
 
 ```json
 {
+  "provider": "claude",
   "agent_id": "a80e24f",
   "session_id": "ea588859-88cd-4511-851a-4fe928cd77c7",
   "slug": "humble-forging-pony",
@@ -173,9 +187,11 @@ Complete metrics object:
 }
 ```
 
+Codex metrics use the same top-level shape with `provider: "codex"` and Codex-specific additive fields such as `codex_cli_version`, `parent_thread_id`, `tokens.cached_input`, `tokens.reasoning_output`, and `execution.reasoning_record_count`.
+
 ### Summary Format
 
-```
+```text
 Agent Metrics: a80e24f
 ══════════════════════════════════════════════════════
 
@@ -234,12 +250,12 @@ Ready for `save_run`:
 
 ## Token Calculations
 
-| Metric | Calculation | Use Case |
-|--------|-------------|----------|
-| `total_effective` | `input + cache_creation + output` | Billing approximation |
-| `total_raw` | All tokens summed | True total processed |
+| Metric | Claude calculation | Codex calculation | Use Case |
+|--------|--------------------|-------------------|----------|
+| `total_effective` | `input + cache_creation + output` | `input - cached_input + output + reasoning_output` | Provider-local tracker parity |
+| `total_raw` | All tokens summed | Codex-reported `total_tokens` | True total processed |
 
-**Note:** Cache reads are excluded from `total_effective` because they're significantly cheaper than other token types.
+**Note:** Cache reads are excluded from Claude `total_effective` because they're significantly cheaper than other token types. Codex cached input is also subtracted for parity with the existing tracker formula, but OpenAI cached input is discounted rather than free, so cross-provider cost rollups should re-price from raw provider token fields.
 
 **Edge cases:**
 - When `cache_creation` is 0 (no new context cached), `total_effective` equals `input + output`
@@ -263,25 +279,42 @@ import {
   toTrackerFormat,
 } from '@uluops/agent-metrics';
 
-// Extract by agent ID (searches all projects)
-const metrics = await extractAgentMetrics('a80e24f');
-if (metrics) {
+async function main() {
+  // Extract by agent ID (searches all projects)
+  const metrics = await extractAgentMetrics('a80e24f');
+  if (!metrics) {
+    throw new Error('Agent metrics not found');
+  }
+
   console.log(`Duration: ${metrics.duration_formatted}`);
   console.log(`Tokens: ${metrics.tokens.total_effective}`);
+
+  // Extract a Codex subagent by UUIDv7 id
+  const codexMetrics = await extractAgentMetrics(
+    '019eaa28-8e2d-73a2-840f-a00d6cc8795f',
+    { provider: 'codex' }
+  );
+
+  // Auto mode routes UUIDv7 ids to Codex and Claude-style hex ids to Claude
+  const autoMetrics = await extractAgentMetrics('019eaa28-8e2d-73a2-840f-a00d6cc8795f');
+
+  // Extract from a specific file path
+  const metricsFromFile = await extractMetricsFromFile('/path/to/agent-abc123.jsonl');
+
+  // Extract multiple agents at once
+  const multipleMetrics = await extractMultipleAgentMetrics(['a80e24f', 'b91f35g']);
+
+  // Format as human-readable summary
+  const summary = formatMetricsSummary(metrics);
+  console.log(summary);
+
+  // Convert to validation tracker format
+  const trackerData = toTrackerFormat(metrics, 'code-validator');
 }
 
-// Extract from a specific file path
-const metricsFromFile = await extractMetricsFromFile('/path/to/agent-abc123.jsonl');
-
-// Extract multiple agents at once
-const multipleMetrics = await extractMultipleAgentMetrics(['a80e24f', 'b91f35g']);
-
-// Format as human-readable summary
-const summary = formatMetricsSummary(metrics);
-console.log(summary);
-
-// Convert to validation tracker format
-const trackerData = toTrackerFormat(metrics, 'code-validator');
+main().catch((error) => {
+  console.error(error);
+});
 ```
 
 ### Buffer Functions
@@ -340,10 +373,14 @@ const clearedCount = clearSession('ea588859-...');
 import {
   findAgentFile,
   findRecentAgentFiles,
+  findCodexAgentFile,
+  findRecentCodexAgentFiles,
   getClaudeProjectsDir,
+  getCodexSessionsDir,
   sanitizePathAsFolderName,
   getProjectName,
   extractAgentIdFromFilename,
+  extractCodexAgentIdFromFilename,
   parseTimestamp,
   calculateDuration,
   formatDuration,
@@ -361,14 +398,22 @@ if (location) {
 
 // Find recent agent files across all projects
 const recentFiles = await findRecentAgentFiles(20); // Last 20
+const recentCodexFiles = await findRecentCodexAgentFiles(20);
 
-// Path utilities — work with Claude Code's project directory conventions
+// Find Codex rollout file location
+const codexLocation = await findCodexAgentFile('019eaa28-8e2d-73a2-840f-a00d6cc8795f');
+
+// Path utilities
 const projectsDir = getClaudeProjectsDir();           // ~/.claude/projects
+const sessionsDir = getCodexSessionsDir();            // ~/.codex/sessions or $CODEX_HOME/sessions
 const folder = sanitizePathAsFolderName('/Users/me/myproject'); // "-Users-me-myproject"
 const name = getProjectName('/path/to/-Users-me-myproject');    // "myproject"
 
 // Agent ID extraction from filenames
 const id = extractAgentIdFromFilename('agent-a80e24f.jsonl'); // "a80e24f"
+const codexId = extractCodexAgentIdFromFilename(
+  'rollout-2026-06-27T03-00-00-000Z-019eaa28-8e2d-73a2-840f-a00d6cc8795f.jsonl'
+);
 
 // Timestamp utilities
 const date = parseTimestamp('2026-03-29T06:21:53.455Z'); // Date object
@@ -428,7 +473,24 @@ logError('Error occurred');
 logMetricsCapture(
   'agent-abc123',
   'session-xyz',
-  { model: 'claude-sonnet-4-5', duration_ms: 5000, tokens: {...}, execution: {...} },
+  {
+    model: 'claude-sonnet-4-5',
+    duration_ms: 5000,
+    tokens: {
+      input: 1000,
+      output: 250,
+      cache_creation: 0,
+      cache_read: 0,
+      total_effective: 1250,
+      total_raw: 1250,
+    },
+    execution: {
+      message_count: 4,
+      tool_use_count: 1,
+      tool_breakdown: { Read: 1 },
+      error_count: 0,
+    },
+  },
   { agentName: 'code-validator', source: 'hook' }
 );
 logBufferOperation('append', { agent_id: 'abc123', buffer_path: '/path/to/buffer' });
@@ -443,6 +505,7 @@ import type {
   TokenMetrics,
   ExecutionMetrics,
   ExtractOptions,
+  MetricsProvider,
   AgentFileLocation,
   // Tracker format types
   TrackerTokens,
@@ -465,8 +528,14 @@ import type {
 ## Data Source
 
 Agent session files are stored at:
-```
+```text
 ~/.claude/projects/{project-folder}/{session-uuid}/subagents/agent-{id}.jsonl
+```
+
+Codex subagent rollout files are stored at:
+
+```text
+~/.codex/sessions/YYYY/MM/DD/rollout-{timestamp}-{uuidv7}.jsonl
 ```
 
 Each JSONL file contains all messages from an agent invocation, including:
@@ -482,11 +551,11 @@ Each JSONL file contains all messages from an agent invocation, including:
 | Command | Description |
 |---------|-------------|
 | `status` | Show buffer statistics (alias for `buffer status`) |
-| `report [-n limit] [-s session] [--current]` | Show recent auto-captured metrics in table format |
-| `list [-n <limit>]` | List recent agent runs from session files |
-| `extract <ids...> [-f format] [--json] [-a agent-name] [--agent-names names]` | Extract metrics for one or more agents |
+| `report [-n limit] [-s session] [--current] [--provider auto|claude|codex]` | Show recent Claude-buffer auto-captured metrics; `codex` exits with guidance because report is buffer-backed |
+| `list [-n <limit>] [-p project] [--provider auto|claude|codex]` | List recent agent runs from session files |
+| `extract <ids...> [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
 | `compare <id...>` | Compare multiple agents side-by-side |
-| `find <id>` | Find the file location for an agent |
+| `find <id> [-p project] [--provider auto|claude|codex]` | Find the file location for an agent |
 | `examples` | Show usage examples for common workflows |
 
 ### Buffer Commands
@@ -520,7 +589,7 @@ agent-metrics log status
 ```
 
 Output:
-```
+```text
 Agent Metrics Log Status
 ══════════════════════════════════════════════════
 Log file:          /home/user/.claude/agent-metrics.log
@@ -572,7 +641,14 @@ The agent-metrics hook automatically captures metrics when any Task tool agent c
 
 ### Setup
 
-Add the hook to `~/.claude/settings.json`:
+`@uluops/setup` configures this hook automatically. For a manual global npm
+install, first locate the package root:
+
+```bash
+npm root -g
+```
+
+Then add the hook to `~/.claude/settings.json` with the matching absolute path:
 
 ```json
 {
@@ -582,7 +658,7 @@ Add the hook to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "node ~/.claude/tools/agent-metrics/dist/hook.js",
+            "command": "node /opt/homebrew/lib/node_modules/@uluops/agent-metrics/dist/hook.js",
             "timeout": 10
           }
         ]
@@ -597,7 +673,7 @@ Add the hook to `~/.claude/settings.json`:
 The hook detects the agent name from an explicit tag in the first user
 message of the transcript:
 
-```
+```text
 [agent:code-validator] Validate code quality on this directory
 ```
 
@@ -608,7 +684,7 @@ project directory name. Workflow commands emit tags automatically; direct
 user invocations can include a tag manually.
 
 See `docs/decisions/0001-explicit-tag-detection.md` for the rationale
-(hardcoded pattern enumeration was removed in v0.4.0).
+(hardcoded name enumeration was removed in v0.4.0).
 
 ### Buffer Commands
 
@@ -680,12 +756,16 @@ echo $METRICS
 
 ## Persistence
 
-The install script copies the tool to `~/.claude/tools/agent-metrics` for persistence across projects. If you reinstall Node.js or clear npm links, you can restore the global command:
+Global npm installs persist through the npm global prefix. If `agent-metrics`
+is no longer on `PATH` after reinstalling Node.js or changing package managers,
+reinstall the package:
 
 ```bash
-cd ~/.claude/tools/agent-metrics
-npm link
+npm install -g @uluops/agent-metrics
 ```
+
+If you use `@uluops/setup`, rerun `npx @uluops/setup` to recreate its managed
+Claude hook files.
 
 ## Future Enhancements
 

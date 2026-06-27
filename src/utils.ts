@@ -15,6 +15,14 @@ export function getClaudeProjectsDir(): string {
 }
 
 /**
+ * Get the Codex sessions directory.
+ */
+export function getCodexSessionsDir(): string {
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  return path.join(codexHome, 'sessions');
+}
+
+/**
  * Convert a directory path to Claude's project folder naming convention.
  * Replaces path separators with dashes to create a flat folder name.
  *
@@ -201,6 +209,126 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
     .map(({ filePath, projectDir }) => ({ filePath, projectDir }));
 }
 
+function isCodexRolloutFile(filename: string): boolean {
+  return filename.startsWith('rollout-') && filename.endsWith('.jsonl');
+}
+
+async function walkCodexSessionFiles(dir: string, files: string[] = []): Promise<string[]> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+
+  await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await walkCodexSessionFiles(entryPath, files);
+      return;
+    }
+    if (entry.isFile() && isCodexRolloutFile(entry.name)) {
+      files.push(entryPath);
+    }
+  }));
+
+  return files;
+}
+
+function readCodexSessionMeta(filePath: string): Record<string, unknown> | null {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(8192);
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0];
+      if (!firstLine) return null;
+      const parsed = JSON.parse(firstLine) as unknown;
+      if (!parsed || typeof parsed !== 'object') return null;
+      const record = parsed as Record<string, unknown>;
+      if (record.type !== 'session_meta') return null;
+      const payload = record.payload;
+      return payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find a Codex rollout file by subagent/session id.
+ *
+ * Searches `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise
+ * `~/.codex/sessions`. The filename suffix is checked first, then the
+ * `session_meta.payload.id` value is used as a fallback for older or renamed
+ * rollout files.
+ *
+ * @param agentId - Codex UUIDv7 subagent/session id
+ * @returns Location of the rollout file, or null if not found
+ */
+export async function findCodexAgentFile(agentId: string): Promise<AgentFileLocation | null> {
+  const sessionsDir = getCodexSessionsDir();
+  const filenameSuffix = `-${agentId}.jsonl`;
+  const files = await walkCodexSessionFiles(sessionsDir);
+
+  for (const filePath of files) {
+    if (!path.basename(filePath).endsWith(filenameSuffix)) continue;
+    const meta = readCodexSessionMeta(filePath);
+    const cwd = typeof meta?.cwd === 'string' ? meta.cwd : sessionsDir;
+    return { filePath, projectDir: cwd };
+  }
+
+  for (const filePath of files) {
+    const meta = readCodexSessionMeta(filePath);
+    if (meta?.id === agentId) {
+      const cwd = typeof meta.cwd === 'string' ? meta.cwd : sessionsDir;
+      return { filePath, projectDir: cwd };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Find recent Codex subagent rollout files.
+ *
+ * Scans Codex session rollout JSONL files and returns only files whose
+ * `session_meta.payload.thread_source` is `subagent`. Results are sorted by
+ * modification time, newest first.
+ *
+ * @param limit - Maximum number of files to return (default: 10)
+ * @returns Recent Codex subagent rollout locations
+ */
+export async function findRecentCodexAgentFiles(limit: number = 10): Promise<AgentFileLocation[]> {
+  if (limit <= 0) return [];
+  const sessionsDir = getCodexSessionsDir();
+  const files = await walkCodexSessionFiles(sessionsDir);
+  const candidates: Array<AgentFileLocation & { mtime: number }> = [];
+
+  const stats = await Promise.allSettled(
+    files.map(async (filePath) => {
+      const meta = readCodexSessionMeta(filePath);
+      if (meta?.thread_source !== 'subagent') return null;
+      const stat = await fs.promises.stat(filePath);
+      const cwd = typeof meta.cwd === 'string' ? meta.cwd : sessionsDir;
+      return { filePath, projectDir: cwd, mtime: stat.mtimeMs };
+    })
+  );
+
+  for (const result of stats) {
+    if (result.status === 'fulfilled' && result.value) {
+      candidates.push(result.value);
+    }
+  }
+
+  return candidates
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, limit)
+    .map(({ filePath, projectDir }) => ({ filePath, projectDir }));
+}
+
 /**
  * Format duration in milliseconds to human-readable string
  *
@@ -310,6 +438,18 @@ export function calculateDuration(start: string, end: string): number {
  */
 export function extractAgentIdFromFilename(filename: string): string | null {
   const match = filename.match(/^agent-([a-f0-9]+)\.jsonl$/);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Extract a Codex session id from a rollout filename.
+ *
+ * @param filename - Rollout filename ending in a UUID, for example
+ * `rollout-2026-06-27T03-00-00-000Z-019eaa28-8e2d-73a2-840f-a00d6cc8795f.jsonl`
+ * @returns Codex UUID from the filename, or null if it is not a rollout file
+ */
+export function extractCodexAgentIdFromFilename(filename: string): string | null {
+  const match = filename.match(/^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/);
   return match?.[1] ?? null;
 }
 

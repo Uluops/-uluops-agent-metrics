@@ -10,15 +10,23 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { registerBufferCommands } from './buffer.js';
 import { createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
+
+const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-buffer-commands-test-' + Date.now());
 
 describe('Buffer Commands', () => {
   let harness: CommandTestHarness;
   let program: CommandTestHarness['program'];
   let output: CommandTestHarness['output'];
+  const originalEnv = { ...process.env };
 
   beforeEach(() => {
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    process.env.HOME = TEST_DIR;
     harness = createCommandTestHarness();
     program = harness.program;
     output = harness.output;
@@ -27,6 +35,8 @@ describe('Buffer Commands', () => {
 
   afterEach(() => {
     harness.restore();
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
+    process.env = { ...originalEnv };
   });
 
   describe('buffer status command', () => {

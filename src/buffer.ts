@@ -48,10 +48,12 @@ export interface BufferConfig {
   lockTimeoutMs?: number;
 }
 
-const DEFAULT_CONFIG: BufferConfig = {
-  bufferPath: path.join(os.homedir(), '.claude', 'agent-metrics-buffer.jsonl'),
-  defaultTTL: 24 * 60 * 60 * 1000, // 24 hours
-};
+function defaultConfig(): BufferConfig {
+  return {
+    bufferPath: path.join(os.homedir(), '.claude', 'agent-metrics-buffer.jsonl'),
+    defaultTTL: 24 * 60 * 60 * 1000, // 24 hours
+  };
+}
 
 /**
  * Buffer statistics returned by getBufferStats
@@ -115,7 +117,7 @@ function isValidBufferEntry(obj: unknown): obj is BufferEntry {
 /**
  * Ensure buffer directory exists
  */
-function ensureBufferDir(config: BufferConfig = DEFAULT_CONFIG): void {
+function ensureBufferDir(config: BufferConfig = defaultConfig()): void {
   const dir = path.dirname(config.bufferPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -152,7 +154,7 @@ export function appendToBuffer(
     source?: 'hook' | 'cli' | 'api';
   } = {}
 ): BufferEntry {
-  const config = options.config || DEFAULT_CONFIG;
+  const config = options.config || defaultConfig();
   const ttl = options.ttlMs ?? config.defaultTTL;
 
   ensureBufferDir(config);
@@ -219,7 +221,7 @@ export function appendToBuffer(
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Array of all buffer entries, including expired ones
  */
-export function readBuffer(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[] {
+export function readBuffer(config: BufferConfig = defaultConfig()): BufferEntry[] {
   if (!fs.existsSync(config.bufferPath)) {
     return [];
   }
@@ -255,7 +257,7 @@ export function readBuffer(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[]
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Array of valid (non-expired) buffer entries
  */
-export function readValidEntries(config: BufferConfig = DEFAULT_CONFIG): BufferEntry[] {
+export function readValidEntries(config: BufferConfig = defaultConfig()): BufferEntry[] {
   const now = new Date();
   return readBuffer(config).filter((entry) => !isExpired(entry, now));
 }
@@ -286,7 +288,7 @@ export function queryBuffer(
     endTimeBefore?: Date;
     includeExpired?: boolean;
   },
-  config: BufferConfig = DEFAULT_CONFIG
+  config: BufferConfig = defaultConfig()
 ): BufferEntry[] {
   const entries = query.includeExpired
     ? readBuffer(config)
@@ -315,7 +317,7 @@ export function queryBuffer(
  */
 export function getLatestForSession(
   sessionId: string,
-  config: BufferConfig = DEFAULT_CONFIG
+  config: BufferConfig = defaultConfig()
 ): BufferEntry | null {
   const entries = queryBuffer({ sessionId }, config);
   if (entries.length === 0) return null;
@@ -336,7 +338,7 @@ export function getLatestForSession(
  */
 export function getAllForSession(
   sessionId: string,
-  config: BufferConfig = DEFAULT_CONFIG
+  config: BufferConfig = defaultConfig()
 ): BufferEntry[] {
   return queryBuffer({ sessionId }, config).sort((a, b) =>
     new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime()
@@ -353,7 +355,7 @@ export function getAllForSession(
  */
 function removeWhere(
   keep: (entry: BufferEntry) => boolean,
-  config: BufferConfig = DEFAULT_CONFIG,
+  config: BufferConfig = defaultConfig(),
 ): number {
   return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
     const allEntries = readBuffer(config);
@@ -374,7 +376,7 @@ function removeWhere(
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Number of entries removed
  */
-export function cleanupExpired(config: BufferConfig = DEFAULT_CONFIG): number {
+export function cleanupExpired(config: BufferConfig = defaultConfig()): number {
   const now = new Date();
   return removeWhere((entry) => !isExpired(entry, now), config);
 }
@@ -388,7 +390,7 @@ export function cleanupExpired(config: BufferConfig = DEFAULT_CONFIG): number {
  */
 export function clearSession(
   sessionId: string,
-  config: BufferConfig = DEFAULT_CONFIG
+  config: BufferConfig = defaultConfig()
 ): number {
   return removeWhere((entry) => entry.session_id !== sessionId, config);
 }
@@ -402,7 +404,7 @@ export function clearSession(
  */
 export function clearAgents(
   agentIds: string[],
-  config: BufferConfig = DEFAULT_CONFIG
+  config: BufferConfig = defaultConfig()
 ): number {
   return removeWhere((entry) => !agentIds.includes(entry.agent_id), config);
 }
@@ -413,7 +415,7 @@ export function clearAgents(
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Object containing buffer statistics
  */
-export function getBufferStats(config: BufferConfig = DEFAULT_CONFIG): BufferStats {
+export function getBufferStats(config: BufferConfig = defaultConfig()): BufferStats {
   const all = readBuffer(config);
   const now = new Date();
 

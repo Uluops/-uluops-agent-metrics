@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- README Quick Start now leads with `list` and `extract` for npm-first users,
+  reserving `report` for hook-buffer captures.
+- README TypeScript examples now preserve `extractAgentMetrics` nullability and
+  avoid undocumented top-level `await` assumptions.
+- README command reference now documents `report --provider codex` as an
+  accepted guidance path.
+
+## [0.5.1] - 2026-06-27
+
+### Fixed
+
+- `list --provider auto` now sorts mixed Claude and Codex runs by file mtime
+  before applying `--limit`.
+- `list --project` now filters both Claude and Codex session files.
+- `report --provider` now validates provider choices through Commander.
+- README and CLI descriptions now consistently describe Claude Code and Codex
+  provider support.
+- Package publish configuration excludes internal test utilities from the
+  production tarball.
+
+## [0.5.0] - 2026-06-27
+
+### Added
+
+- Codex metrics provider for local Codex JSONL session rollouts under
+  `~/.codex/sessions/` or `$CODEX_HOME/sessions/`.
+- Provider-aware extraction via `--provider auto|claude|codex`; UUIDv7
+  agent ids route to Codex in auto mode.
+- Codex-aware token fields on `AgentMetrics`, including
+  `tokens.cached_input`, `tokens.reasoning_output`, and
+  `execution.reasoning_record_count`.
+- `list --provider codex` and `find <uuidv7> --provider codex` support for
+  Codex subagent rollouts.
+- Package validation coverage for Codex single-turn extraction, multi-turn
+  aggregation, provider dispatch, and CLI provider behavior.
+
+### Changed
+
+- Package description and README now describe Claude Code and Codex support.
+- Buffer defaults are resolved lazily so tests and CLI invocations respect the
+  current `HOME` environment instead of an import-time value.
+- `report` remains Claude-buffer-backed in this release. Codex users should use
+  `agent-metrics list --provider codex` and
+  `agent-metrics extract <id> --provider codex`.
+
 ## [0.4.0] - 2026-05-29
 
 ### Changed

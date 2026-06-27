@@ -65,6 +65,7 @@ export function randomId(): string {
  */
 export function createTestMetrics(overrides: Partial<AgentMetrics> = {}): AgentMetrics {
   return {
+    provider: 'claude',
     agent_id: `${TEST_AGENT_PREFIX}-${randomId()}`,
     session_id: `${TEST_SESSION_PREFIX}-${randomId()}`,
     slug: 'test-slug',

@@ -26,7 +26,11 @@ export interface TokenMetrics {
   cache_creation: number;
   /** Tokens read from cache (cheap) */
   cache_read: number;
-  /** Effective total: input + cache_creation + output (excludes cheap cache reads) */
+  /** Cached input tokens reported by Codex. OpenAI cached input is discounted, not free; Codex total_effective subtracts these fully only for parity with the existing Claude cache-read formula. */
+  cached_input?: number;
+  /** Reasoning output tokens reported separately by Codex */
+  reasoning_output?: number;
+  /** Effective total: Claude uses input + cache_creation + output; Codex uses input - cached_input + output + reasoning_output for provider-local tracker parity, not cost-accurate cross-provider billing. */
   total_effective: number;
   /** Raw total: all tokens summed */
   total_raw: number;
@@ -51,12 +55,16 @@ export interface ExecutionMetrics {
   tool_breakdown: ToolBreakdown;
   /** Number of failed tool calls */
   error_count: number;
+  /** Number of Codex reasoning response records */
+  reasoning_record_count?: number;
 }
 
 /**
  * Complete metrics extracted from an agent session file
  */
 export interface AgentMetrics {
+  /** Metrics provider that produced this record */
+  provider: 'claude' | 'codex';
   // Identification
   /** Unique agent identifier (e.g., "ac51171") */
   agent_id: string;
@@ -69,11 +77,17 @@ export interface AgentMetrics {
   /** Model used (e.g., "claude-sonnet-4-5-20250929") */
   model: string;
   /** Git branch at execution time */
-  git_branch: string;
+  git_branch?: string;
   /** Working directory during execution */
   cwd: string;
   /** Claude Code version */
-  claude_code_version: string;
+  claude_code_version?: string;
+  /** Codex CLI version */
+  codex_cli_version?: string;
+  /** Model provider reported by Codex */
+  model_provider?: string;
+  /** Codex parent thread id. Same value as session_id in this release. */
+  parent_thread_id?: string;
   /** Prompt ID — shared by all agents spawned from the same user message (workflow grouping key) */
   prompt_id: string | null;
 
@@ -86,6 +100,8 @@ export interface AgentMetrics {
   duration_ms: number;
   /** Human-readable duration (e.g., "4m 39s") */
   duration_formatted: string;
+  /** Time to first token for providers that expose it */
+  time_to_first_token_ms?: number;
 
   // Tokens
   /** Token usage breakdown */
@@ -94,6 +110,8 @@ export interface AgentMetrics {
   // Execution
   /** Execution statistics */
   execution: ExecutionMetrics;
+  /** Final provider-reported message, when available */
+  final_message?: string;
 }
 
 /**
@@ -169,6 +187,11 @@ export function isToolUseBlock(block: unknown): block is ToolUseBlock {
 export type ExtractFormat = 'json' | 'summary' | 'tracker';
 
 /**
+ * Metrics provider selection.
+ */
+export type MetricsProvider = 'claude' | 'codex' | 'auto';
+
+/**
  * Output format options for buffer commands
  */
 export type BufferFormat = 'table' | 'json' | 'tracker';
@@ -179,6 +202,8 @@ export type BufferFormat = 'table' | 'json' | 'tracker';
 export interface ExtractOptions {
   /** Override project path (auto-detected if not provided) */
   projectPath?: string;
+  /** Metrics provider to read from. Defaults to shape-based auto dispatch. */
+  provider?: MetricsProvider;
 }
 
 /**

@@ -1,11 +1,11 @@
 {
   "name": "@uluops/agent-metrics",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "type": "module",
-  "description": "Extract accurate metrics from Claude Code agent session files",
+  "description": "Extract accurate metrics from Claude Code and Codex agent session files",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Uluops/-uluops-agent-metrics.git"
+    "url": "git+https://github.com/Uluops/-uluops-agent-metrics.git"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,6 +31,7 @@
   "keywords": [
     "claude",
     "claude-code",
+    "codex",
     "metrics",
     "tokens",
     "validation"

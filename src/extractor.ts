@@ -19,6 +19,14 @@ import {
   formatNumber,
   calculateDuration,
 } from './utils.js';
+import { extractCodexAgentMetrics } from './codex-extractor.js';
+
+const CODEX_UUIDV7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function resolveProvider(agentId: string, provider: ExtractOptions['provider'] = 'auto'): 'claude' | 'codex' {
+  if (provider === 'claude' || provider === 'codex') return provider;
+  return CODEX_UUIDV7_PATTERN.test(agentId) ? 'codex' : 'claude';
+}
 
 /**
  * Validate that a parsed object has the minimum required RawAgentMessage fields.
@@ -64,6 +72,10 @@ export async function extractAgentMetrics(
   agentId: string,
   options: ExtractOptions = {}
 ): Promise<AgentMetrics | null> {
+  if (resolveProvider(agentId, options.provider) === 'codex') {
+    return extractCodexAgentMetrics(agentId);
+  }
+
   // Find the agent file
   const location = findAgentFile(agentId, options.projectPath);
   if (!location) {
@@ -164,6 +176,7 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
   const durationMs = calculateDuration(first.timestamp, last.timestamp);
 
   return {
+    provider: 'claude',
     agent_id: first.agentId,
     session_id: first.sessionId,
     slug: first.slug ?? first.agentId,
@@ -206,6 +219,13 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
 export async function extractMetricsFromFile(
   filePath: string
 ): Promise<AgentMetrics> {
+  try {
+    await fs.promises.access(filePath, fs.constants.R_OK);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to read agent metrics file "${filePath}": ${message}`);
+  }
+
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
     input: fileStream,
@@ -272,8 +292,9 @@ export function formatMetricsSummary(metrics: AgentMetrics): string {
     '',
     '┌─ Context',
     `│  Model:       ${metrics.model}`,
-    `│  Branch:      ${metrics.git_branch}`,
-    `│  Version:     ${metrics.claude_code_version}`,
+    `│  Provider:    ${metrics.provider}`,
+    `│  Branch:      ${metrics.git_branch ?? 'n/a'}`,
+    `│  Version:     ${metrics.claude_code_version ?? metrics.codex_cli_version ?? 'unknown'}`,
     '',
     '┌─ Timing',
     `│  Start:       ${metrics.start_time}`,
@@ -285,6 +306,8 @@ export function formatMetricsSummary(metrics: AgentMetrics): string {
     `│  Output:      ${formatNumber(metrics.tokens.output)}`,
     `│  Cache Create:${formatNumber(metrics.tokens.cache_creation)}`,
     `│  Cache Read:  ${formatNumber(metrics.tokens.cache_read)}`,
+    ...(metrics.tokens.cached_input !== undefined ? [`│  Cached Input:${formatNumber(metrics.tokens.cached_input)}`] : []),
+    ...(metrics.tokens.reasoning_output !== undefined ? [`│  Reasoning:   ${formatNumber(metrics.tokens.reasoning_output)}`] : []),
     `│  ─────────────`,
     `│  Effective:   ${formatNumber(metrics.tokens.total_effective)} (excl. cache reads)`,
     `│  Raw Total:   ${formatNumber(metrics.tokens.total_raw)}`,

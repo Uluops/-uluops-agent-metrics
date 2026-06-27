@@ -24,7 +24,7 @@ const program = new Command();
 
 program
   .name('agent-metrics')
-  .description('Extract accurate metrics from Claude Code agent session files')
+  .description('Extract accurate metrics from Claude Code and Codex agent session files')
   .version(version);
 
 // Register all command groups
@@ -60,6 +60,7 @@ EXTRACT METRICS
     $ agent-metrics extract a7c642b
     $ agent-metrics extract a7c642b --json
     $ agent-metrics extract a7c642b -f summary
+    $ agent-metrics extract 019eaa28-8e2d-73a2-840f-a00d6cc8795f --provider codex
 
   Multiple agents (batch):
     $ agent-metrics extract a7c642b a03c37d af0c1a1
@@ -94,10 +95,12 @@ COMPARE AGENTS
 
   Find agent file location:
     $ agent-metrics find a7c642b
+    $ agent-metrics find 019eaa28-8e2d-73a2-840f-a00d6cc8795f --provider codex
 
   List recent runs from disk:
     $ agent-metrics list
     $ agent-metrics list --limit 20
+    $ agent-metrics list --provider codex
 
 
 REPORT COLUMNS
@@ -105,17 +108,17 @@ REPORT COLUMNS
 
   The report table shows:
     Agent ID     — Unique identifier for each agent run
-    Agent Name   — Auto-detected from [agent:name] tags or pattern matching
+    Agent Name   — Auto-detected from [agent:name] tags
     Model        — sonnet-4-6, opus-4-6, haiku-4-5
     Duration     — Wall clock time
     Tokens       — Effective tokens (input + cache_creation + output)
     Cache        — Cache hit rate (cache_read / total * 100)
     Tools        — Number of tool calls made
 
-  Agent names are detected automatically via:
-    1. Explicit tag in prompt: [agent:code-validator] (highest priority)
-    2. Pattern matching against known agent names (fallback)
-    3. Project directory name (final fallback)
+  Agent names are detected from an explicit prompt tag:
+    [agent:code-validator]
+
+  Untagged invocations fall back to the project directory name.
 
 
 BUFFER & FILTERING

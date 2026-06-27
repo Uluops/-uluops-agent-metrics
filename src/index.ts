@@ -1,7 +1,7 @@
 /**
  * Agent Metrics
  *
- * Extract accurate metrics from Claude Code agent session files.
+ * Extract accurate metrics from Claude Code and Codex agent session files.
  *
  * This module provides:
  * - Extraction functions for agent metrics
@@ -28,10 +28,14 @@ export type { TrackerTokens, TrackerFormat } from './extractor.js';
 export {
   findAgentFile,
   findRecentAgentFiles,
+  findCodexAgentFile,
+  findRecentCodexAgentFiles,
   getClaudeProjectsDir,
+  getCodexSessionsDir,
   sanitizePathAsFolderName,
   getProjectName,
   extractAgentIdFromFilename,
+  extractCodexAgentIdFromFilename,
   parseTimestamp,
   calculateDuration,
   formatDuration,
@@ -47,6 +51,7 @@ export type {
   ExecutionMetrics,
   ExtractOptions,
   ExtractFormat,
+  MetricsProvider,
   BufferFormat,
   AgentFileLocation,
 } from './types.js';
