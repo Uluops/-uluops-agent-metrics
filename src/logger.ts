@@ -212,6 +212,12 @@ export function error(message: string, data?: Record<string, unknown>): void {
  * @param sessionId - The session ID (truncated to 12 chars in output)
  * @param metrics - Metrics data to log (model, duration, tokens, execution)
  * @param options - Optional metadata (agent name, project path, source)
+ *
+ * @example
+ * logMetricsCapture('agent-abc123', 'session-xyz', metrics, {
+ *   agentName: 'code-validator',
+ *   source: 'hook',
+ * });
  */
 export function logMetricsCapture(
   agentId: string,

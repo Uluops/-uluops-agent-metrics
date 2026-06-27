@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   avoid undocumented top-level `await` assumptions.
 - README command reference now documents `report --provider codex` as an
   accepted guidance path.
+- Public TSDoc now covers Codex/Claude path helper return contracts,
+  `isToolUseBlock`, and `logMetricsCapture` usage.
+- Invalid Claude JSONL records now report the expected minimum fields in their
+  warning message.
 
 ## [0.5.1] - 2026-06-27
 

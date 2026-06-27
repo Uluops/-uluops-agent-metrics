@@ -175,7 +175,10 @@ export interface ThinkingBlock {
 export type ContentBlock = ToolUseBlock | TextBlock | ThinkingBlock | { type: string };
 
 /**
- * Type predicate for ToolUseBlock
+ * Type predicate for `ToolUseBlock` content blocks.
+ *
+ * @param block - Unknown content block to inspect
+ * @returns True when the block has `type: "tool_use"`
  */
 export function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return block != null && typeof block === 'object' && (block as Record<string, unknown>).type === 'tool_use';

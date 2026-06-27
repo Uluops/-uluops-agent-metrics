@@ -551,13 +551,20 @@ describe('Extractor Module', () => {
       ].join('\n');
       fs.writeFileSync(filePath, validContent + '\n' + invalidLines + '\n');
 
-      // Suppress stderr for this test
+      const warnings: string[] = [];
       const origWrite = process.stderr.write;
-      process.stderr.write = (() => true) as typeof process.stderr.write;
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        warnings.push(chunk.toString());
+        return true;
+      }) as typeof process.stderr.write;
       try {
         const metrics = await extractMetricsFromFile(filePath);
         assert.ok(metrics, 'Should extract valid metrics and skip invalid entries');
         assert.strictEqual(metrics.agent_id, 'test-agent-123');
+        assert.ok(
+          warnings.some((warning) => warning.includes('expected timestamp, type, agentId, sessionId, cwd, version, gitBranch')),
+          'Should explain the expected minimum fields'
+        );
       } finally {
         process.stderr.write = origWrite;
       }

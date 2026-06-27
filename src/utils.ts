@@ -9,6 +9,8 @@ import type { AgentFileLocation } from './types.js';
 
 /**
  * Get the Claude Code projects directory
+ *
+ * @returns Absolute path to `~/.claude/projects`
  */
 export function getClaudeProjectsDir(): string {
   return path.join(os.homedir(), '.claude', 'projects');
@@ -16,6 +18,11 @@ export function getClaudeProjectsDir(): string {
 
 /**
  * Get the Codex sessions directory.
+ *
+ * Uses `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise
+ * `~/.codex/sessions`.
+ *
+ * @returns Absolute path to the Codex sessions directory
  */
 export function getCodexSessionsDir(): string {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
@@ -379,6 +386,12 @@ export function formatTokens(tokens: number): string {
   return tokens.toString();
 }
 
+/** Pattern to match Claude model prefix */
+const CLAUDE_PREFIX_PATTERN = /^claude-/;
+
+/** Pattern to match 8-digit date suffix (e.g., -20250929) */
+const DATE_SUFFIX_PATTERN = /-\d{8}$/;
+
 /**
  * Format a model name for display by removing the "claude-" prefix and date suffix.
  * Handles various model name formats consistently.
@@ -392,12 +405,6 @@ export function formatTokens(tokens: number): string {
  * formatModelName('claude-opus-4-5-20251101') // 'opus-4-5'
  * formatModelName('unknown-model') // 'unknown-mode'
  */
-/** Pattern to match Claude model prefix */
-const CLAUDE_PREFIX_PATTERN = /^claude-/;
-
-/** Pattern to match 8-digit date suffix (e.g., -20250929) */
-const DATE_SUFFIX_PATTERN = /-\d{8}$/;
-
 export function formatModelName(model: string | undefined | null, maxLength: number = 12): string {
   if (!model) return 'unknown';
   return model

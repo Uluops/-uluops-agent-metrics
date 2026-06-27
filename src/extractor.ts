@@ -22,6 +22,7 @@ import {
 import { extractCodexAgentMetrics } from './codex-extractor.js';
 
 const CODEX_UUIDV7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const REQUIRED_AGENT_MESSAGE_FIELDS = 'timestamp, type, agentId, sessionId, cwd, version, gitBranch';
 
 function resolveProvider(agentId: string, provider: ExtractOptions['provider'] = 'auto'): 'claude' | 'codex' {
   if (provider === 'claude' || provider === 'codex') return provider;
@@ -240,7 +241,7 @@ export async function extractMetricsFromFile(
     try {
       const parsed = JSON.parse(line);
       if (!isValidAgentMessage(parsed)) {
-        process.stderr.write(`Warning: Skipping message with missing required fields in ${filePath}\n`);
+        process.stderr.write(`Warning: Skipping message with missing required fields in ${filePath}; expected ${REQUIRED_AGENT_MESSAGE_FIELDS}\n`);
         continue;
       }
       processMessage(acc, parsed);
