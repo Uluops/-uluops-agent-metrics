@@ -35,7 +35,7 @@ const MOCK_BUFFER_PATH = path.join(TEST_DIR, 'test-buffer.jsonl');
  */
 function createMockMetrics(overrides: Partial<AgentMetrics> = {}): AgentMetrics {
   return {
-    provider: 'claude',
+    harness: 'claude-code',
     agent_id: 'abc1234',
     session_id: 'session-123',
     slug: 'test-session',

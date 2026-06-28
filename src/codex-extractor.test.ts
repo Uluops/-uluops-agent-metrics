@@ -146,7 +146,7 @@ describe('Codex extractor', () => {
   it('extracts single-turn subagent metrics', async () => {
     const metrics = await extractCodexMetricsFromFile(FILE_PATH);
 
-    assert.strictEqual(metrics.provider, 'codex');
+    assert.strictEqual(metrics.harness, 'codex');
     assert.strictEqual(metrics.agent_id, AGENT_ID);
     assert.strictEqual(metrics.session_id, PARENT_ID);
     assert.strictEqual(metrics.parent_thread_id, PARENT_ID);
@@ -162,7 +162,9 @@ describe('Codex extractor', () => {
     assert.strictEqual(metrics.tokens.output, 9);
     assert.strictEqual(metrics.tokens.reasoning_output, 7);
     assert.strictEqual(metrics.tokens.total_raw, 12475);
-    assert.strictEqual(metrics.tokens.total_effective, 12459 - 4992 + 9 + 7);
+    // (input − cached_input) + output. reasoning_output (7) is a subset of gross output,
+    // NOT added (was the +reasoning double-count). §3.3.
+    assert.strictEqual(metrics.tokens.total_effective, 12459 - 4992 + 9);
     assert.strictEqual(metrics.execution.message_count, 1);
     assert.strictEqual(metrics.execution.reasoning_record_count, 1);
     assert.strictEqual(metrics.execution.tool_use_count, 3);
@@ -186,7 +188,46 @@ describe('Codex extractor', () => {
     assert.strictEqual(metrics.tokens.output, 60);
     assert.strictEqual(metrics.tokens.reasoning_output, 10);
     assert.strictEqual(metrics.tokens.total_raw, 370);
-    assert.strictEqual(metrics.tokens.total_effective, 320);
+    // (300 − 50) + 60 = 310. reasoning_output (10) not added (§3.3).
+    assert.strictEqual(metrics.tokens.total_effective, 310);
+  });
+
+  it('CXA-1: a token_count without total_token_usage does not zero prior token metrics', async () => {
+    const filePath = path.join(TEST_DIR, 'cxa1.jsonl');
+    fs.writeFileSync(filePath, [
+      sessionMeta(),
+      tokenCount('2026-06-08T16:14:12.000Z', {
+        input_tokens: 100, cached_input_tokens: 10, output_tokens: 20,
+        reasoning_output_tokens: 5, total_tokens: 125,
+      }),
+      // A later token_count lacking total_token_usage → extractTokenUsage returns null.
+      // Pre-fix this clobbered acc.tokenUsage with null, zeroing everything.
+      record('event_msg', '2026-06-08T16:14:13.000Z', { type: 'token_count', info: {} }),
+      record('event_msg', '2026-06-08T16:14:14.000Z', { type: 'task_complete', duration_ms: 1000 }),
+    ].join('\n'));
+
+    const metrics = await extractCodexMetricsFromFile(filePath);
+
+    assert.strictEqual(metrics.tokens.input, 100);
+    assert.strictEqual(metrics.tokens.output, 20);
+    assert.strictEqual(metrics.tokens.total_effective, 100 - 10 + 20); // 110, not 0
+  });
+
+  it('clamps Codex total_effective at zero when cached_input exceeds input (issue 7ecac2a3)', async () => {
+    const filePath = path.join(TEST_DIR, 'clamp.jsonl');
+    fs.writeFileSync(filePath, [
+      sessionMeta(),
+      tokenCount('2026-06-08T16:14:12.000Z', {
+        input_tokens: 10, cached_input_tokens: 50, output_tokens: 30,
+        reasoning_output_tokens: 0, total_tokens: 40,
+      }),
+      record('event_msg', '2026-06-08T16:14:13.000Z', { type: 'task_complete', duration_ms: 1000 }),
+    ].join('\n'));
+
+    const metrics = await extractCodexMetricsFromFile(filePath);
+
+    // Math.max(0, 10 − 50) + 30 = 30 — never negative.
+    assert.strictEqual(metrics.tokens.total_effective, 30);
   });
 
   it('finds Codex files by filename suffix without requiring date knowledge', async () => {

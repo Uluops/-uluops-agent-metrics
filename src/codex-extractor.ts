@@ -123,7 +123,11 @@ function processEvent(acc: CodexAccumulator, payload: Record<string, unknown>): 
   const payloadType = safeString(payload.type);
 
   if (payloadType === 'token_count') {
-    acc.tokenUsage = extractTokenUsage(payload);
+    // CXA-1: only overwrite when this event actually carries totals. extractTokenUsage
+    // returns null when total_token_usage is absent; clobbering prior good usage with
+    // null silently zeroes ALL token metrics at buildMetrics. Keep the last good value.
+    const usage = extractTokenUsage(payload);
+    if (usage) acc.tokenUsage = usage;
     return;
   }
 
@@ -234,7 +238,7 @@ function buildMetrics(acc: CodexAccumulator): AgentMetrics {
     : calculateDuration(startTime, endTime);
 
   return {
-    provider: 'codex',
+    harness: 'codex',
     agent_id: agentId,
     session_id: parentThreadId,
     parent_thread_id: parentThreadId,
@@ -256,7 +260,11 @@ function buildMetrics(acc: CodexAccumulator): AgentMetrics {
       cache_read: 0,
       cached_input: cachedInput,
       reasoning_output: reasoningOutput,
-      total_effective: input - cachedInput + output + reasoningOutput,
+      // Canonical: (input − cached_input) + output_gross. reasoning_output is a SUBSET
+      // of gross output (already inside `output`) — stored above, NOT added here (§2.3/§3.3).
+      // Clamp the input−cached term at 0 (issue 7ecac2a3): a provider could report
+      // cached_input > input, which must never drive total_effective negative.
+      total_effective: Math.max(0, input - cachedInput) + output,
       total_raw: rawTotal,
     },
     execution: {

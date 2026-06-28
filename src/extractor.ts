@@ -177,7 +177,7 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
   const durationMs = calculateDuration(first.timestamp, last.timestamp);
 
   return {
-    provider: 'claude',
+    harness: 'claude-code',
     agent_id: first.agentId,
     session_id: first.sessionId,
     slug: first.slug ?? first.agentId,
@@ -293,7 +293,7 @@ export function formatMetricsSummary(metrics: AgentMetrics): string {
     '',
     '┌─ Context',
     `│  Model:       ${metrics.model}`,
-    `│  Provider:    ${metrics.provider}`,
+    `│  Harness:     ${metrics.harness}`,
     `│  Branch:      ${metrics.git_branch ?? 'n/a'}`,
     `│  Version:     ${metrics.claude_code_version ?? metrics.codex_cli_version ?? 'unknown'}`,
     '',
@@ -309,6 +309,8 @@ export function formatMetricsSummary(metrics: AgentMetrics): string {
     `│  Cache Read:  ${formatNumber(metrics.tokens.cache_read)}`,
     ...(metrics.tokens.cached_input !== undefined ? [`│  Cached Input:${formatNumber(metrics.tokens.cached_input)}`] : []),
     ...(metrics.tokens.reasoning_output !== undefined ? [`│  Reasoning:   ${formatNumber(metrics.tokens.reasoning_output)}`] : []),
+    ...(metrics.tokens.thinking !== undefined ? [`│  Thinking:    ${formatNumber(metrics.tokens.thinking)}`] : []),
+    ...(metrics.tokens.tool !== undefined ? [`│  Tool:        ${formatNumber(metrics.tokens.tool)}`] : []),
     `│  ─────────────`,
     `│  Effective:   ${formatNumber(metrics.tokens.total_effective)} (excl. cache reads)`,
     `│  Raw Total:   ${formatNumber(metrics.tokens.total_raw)}`,
@@ -341,6 +343,11 @@ export interface TrackerTokens {
   cache_creation_tokens: number;
   cache_read_tokens: number;
   total_effective_tokens: number;
+  /** Cross-harness components (v0.6.0). Undefined → stored NULL. Subsets of gross output, never added. */
+  cached_input_tokens?: number;
+  reasoning_output_tokens?: number;
+  thinking_tokens?: number;
+  tool_tokens?: number;
 }
 
 /**
@@ -349,6 +356,8 @@ export interface TrackerTokens {
 export interface TrackerFormat {
   name: string;
   model: string;
+  /** Producing harness (v0.6.0). claude-code | codex. */
+  harness?: string;
   tokens: TrackerTokens;
   duration_ms: number;
 }
@@ -367,12 +376,17 @@ export function toTrackerFormat(
   return {
     name: agentName,
     model: metrics.model,
+    harness: metrics.harness,
     tokens: {
       input_tokens: metrics.tokens.input,
       output_tokens: metrics.tokens.output,
       cache_creation_tokens: metrics.tokens.cache_creation,
       cache_read_tokens: metrics.tokens.cache_read,
       total_effective_tokens: metrics.tokens.total_effective,
+      cached_input_tokens: metrics.tokens.cached_input,
+      reasoning_output_tokens: metrics.tokens.reasoning_output,
+      thinking_tokens: metrics.tokens.thinking,
+      tool_tokens: metrics.tokens.tool,
     },
     duration_ms: metrics.duration_ms,
   };

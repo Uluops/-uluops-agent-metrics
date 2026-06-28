@@ -7,8 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-28
+
+### Added
+
+- **Cross-harness token components carried through the tracker wire** (the §1.2
+  data-death point). `toTrackerFormat` and `entriesToTrackerFormat` now emit
+  `cached_input_tokens`, `reasoning_output_tokens`, `thinking_tokens`,
+  `tool_tokens`, and `harness`. New `thinking`/`tool` fields on `TokenMetrics`
+  (forward-compat for the Gemini provider). Display renders the new components.
+
+### Changed
+
+- **BREAKING (field rename): `AgentMetrics.provider` → `harness`**, values
+  `'claude'` → `'claude-code'` (`'codex'` unchanged). Canonical harness vocabulary
+  §2.4. The `ExtractOptions.provider` *dispatch option* is unrelated and unchanged.
+- **Codex `total_effective` formula fix** — drop the `+ reasoning_output` term:
+  `(input − cached_input) + output`. reasoning_output is a subset of GROSS output
+  (already inside `output`); adding it double-counted. **Behavioral** — Codex
+  `total_effective` decreases by the reasoning amount (G3: leave historical). §3.3.
+
 ### Fixed
 
+- **CXA-1 (critical): Codex `token_count` without `total_token_usage` no longer
+  zeroes all token metrics.** The handler now only overwrites accumulated usage
+  when the event actually carries totals (keeps the last good value) — previously
+  a trailing tokenless event clobbered everything to 0 silently.
+- **F5 (critical): a buffer entry with `metrics` but no `tokens` no longer crashes
+  the save_run batch.** `isValidBufferEntry` now requires `metrics.tokens`, and
+  `entriesToTrackerFormat` skips tokenless entries defensively — one malformed
+  entry can no longer TypeError the whole ship pipeline.
+- **Codex `total_effective` clamped at 0** (issue 7ecac2a3): `Math.max(0, input −
+  cached_input) + output` — a provider reporting `cached_input > input` can never
+  drive the total negative.
 - README Quick Start now leads with `list` and `extract` for npm-first users,
   reserving `report` for hook-buffer captures.
 - README TypeScript examples now preserve `extractAgentMetrics` nullability and

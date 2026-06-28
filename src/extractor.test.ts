@@ -16,7 +16,7 @@ import {
   formatMetricsSummary,
   toTrackerFormat,
 } from './extractor.js';
-import { BASE_MESSAGE } from './test-utils.js';
+import { BASE_MESSAGE, createTestMetrics } from './test-utils.js';
 
 // Test configuration with isolated temp directory
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-extractor-test-' + Date.now());
@@ -166,7 +166,7 @@ describe('Extractor Module', () => {
       const metrics = await extractMetricsFromFile(filePath);
 
       assert.ok(metrics);
-      assert.strictEqual(metrics.provider, 'claude');
+      assert.strictEqual(metrics.harness, 'claude-code');
       assert.strictEqual(metrics.agent_id, 'test-agent-123');
       assert.strictEqual(metrics.session_id, 'session-uuid-456');
       assert.strictEqual(metrics.model, 'claude-sonnet-4-5-20250929');
@@ -655,8 +655,11 @@ describe('Extractor Module', () => {
       const metrics = await extractAgentMetrics(agentId);
 
       assert.ok(metrics);
-      assert.strictEqual(metrics.provider, 'codex');
-      assert.strictEqual(metrics.tokens.total_effective, 12);
+      assert.strictEqual(metrics.harness, 'codex');
+      // (input − cached_input) + output = (10 − 2) + 3 = 11. reasoning_output (1) is a
+      // subset of gross output and is NOT added (was the +reasoning double-count). §3.3.
+      assert.strictEqual(metrics.tokens.total_effective, 11);
+      assert.strictEqual(metrics.tokens.reasoning_output, 1);
     });
 
     it('routes non-UUIDv7 IDs to Claude in auto mode', async () => {
@@ -669,7 +672,7 @@ describe('Extractor Module', () => {
       const metrics = await extractAgentMetrics('abc1234');
 
       assert.ok(metrics);
-      assert.strictEqual(metrics.provider, 'claude');
+      assert.strictEqual(metrics.harness, 'claude-code');
       assert.strictEqual(metrics.agent_id, 'abc1234');
     });
 
@@ -735,6 +738,25 @@ describe('Extractor Module', () => {
       assert.strictEqual(trackerFormat.tokens.cache_creation_tokens, metrics.tokens.cache_creation);
       assert.strictEqual(trackerFormat.tokens.cache_read_tokens, metrics.tokens.cache_read);
       assert.strictEqual(trackerFormat.tokens.total_effective_tokens, metrics.tokens.total_effective);
+    });
+
+    it('carries harness + cross-harness components through the wire (§1.2 fix)', () => {
+      const metrics = createTestMetrics({
+        harness: 'codex',
+        tokens: {
+          input: 100, output: 50, cache_creation: 0, cache_read: 0,
+          cached_input: 20, reasoning_output: 8, thinking: 0, tool: 3,
+          total_effective: 130, total_raw: 158,
+        },
+      });
+
+      const trackerFormat = toTrackerFormat(metrics, 'codex-agent');
+
+      // Previously these died at the wire (§1.2) — now they survive.
+      assert.strictEqual(trackerFormat.harness, 'codex');
+      assert.strictEqual(trackerFormat.tokens.cached_input_tokens, 20);
+      assert.strictEqual(trackerFormat.tokens.reasoning_output_tokens, 8);
+      assert.strictEqual(trackerFormat.tokens.tool_tokens, 3);
     });
   });
 

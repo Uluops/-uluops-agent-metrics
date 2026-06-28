@@ -157,7 +157,7 @@ Complete metrics object:
 
 ```json
 {
-  "provider": "claude",
+  "harness": "claude-code",
   "agent_id": "a80e24f",
   "session_id": "ea588859-88cd-4511-851a-4fe928cd77c7",
   "slug": "humble-forging-pony",
@@ -187,7 +187,9 @@ Complete metrics object:
 }
 ```
 
-Codex metrics use the same top-level shape with `provider: "codex"` and Codex-specific additive fields such as `codex_cli_version`, `parent_thread_id`, `tokens.cached_input`, `tokens.reasoning_output`, and `execution.reasoning_record_count`.
+Codex metrics use the same top-level shape with `harness: "codex"` and Codex-specific additive fields such as `codex_cli_version`, `parent_thread_id`, `tokens.cached_input`, `tokens.reasoning_output`, and `execution.reasoning_record_count`.
+
+> **v0.6.0:** the top-level metrics field was renamed `provider` → `harness` (values `claude` → `claude-code`; `codex` unchanged). The `--provider` *CLI option* is the unrelated dispatch selector and is unchanged. `tokens` also gained optional `thinking` / `tool` components (subsets of gross output, populated by future providers), and the record carries `harness` through to the tracker wire.
 
 ### Summary Format
 
@@ -252,10 +254,10 @@ Ready for `save_run`:
 
 | Metric | Claude calculation | Codex calculation | Use Case |
 |--------|--------------------|-------------------|----------|
-| `total_effective` | `input + cache_creation + output` | `input - cached_input + output + reasoning_output` | Provider-local tracker parity |
+| `total_effective` | `input + cache_creation + output` | `(input - cached_input) + output` | Provider-local tracker parity |
 | `total_raw` | All tokens summed | Codex-reported `total_tokens` | True total processed |
 
-**Note:** Cache reads are excluded from Claude `total_effective` because they're significantly cheaper than other token types. Codex cached input is also subtracted for parity with the existing tracker formula, but OpenAI cached input is discounted rather than free, so cross-provider cost rollups should re-price from raw provider token fields.
+**Note:** Cache reads are excluded from Claude `total_effective` because they're significantly cheaper than other token types. Codex cached input is likewise subtracted (the analog of Claude's excluded cache read). `reasoning_output` (and `thinking`/`tool`) are **subsets of gross `output`** — stored for cost breakdown but **never added** to `total_effective` (v0.6.0 removed the prior `+ reasoning_output` double-count). OpenAI cached input is discounted rather than free, so cross-provider cost rollups should re-price from raw provider token fields.
 
 **Edge cases:**
 - When `cache_creation` is 0 (no new context cached), `total_effective` equals `input + output`

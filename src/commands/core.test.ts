@@ -146,7 +146,7 @@ describe('Core Commands', () => {
       await program.parseAsync(['node', 'test', 'extract', CODEX_AGENT_ID, '--provider', 'codex']);
 
       const jsonOutput = output.join('\n');
-      assert.ok(jsonOutput.includes('"provider": "codex"'), 'Should output Codex provider');
+      assert.ok(jsonOutput.includes('"harness": "codex"'), 'Should output Codex harness');
       assert.ok(jsonOutput.includes('"cached_input": 25'), 'Should include Codex cached input');
     });
 

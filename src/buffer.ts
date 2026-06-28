@@ -111,6 +111,12 @@ function isValidBufferEntry(obj: unknown): obj is BufferEntry {
   // Check metrics object exists
   if (!entry.metrics || typeof entry.metrics !== 'object') return false;
 
+  // F5: metrics.tokens must exist. Consumers (entriesToTrackerFormat) dereference
+  // metrics.tokens.* unconditionally; an entry with `metrics` but no `tokens` would
+  // TypeError-crash them — and one bad entry takes down the whole save_run batch.
+  const metrics = entry.metrics as Record<string, unknown>;
+  if (!metrics.tokens || typeof metrics.tokens !== 'object') return false;
+
   return true;
 }
 
@@ -468,12 +474,19 @@ export function getBufferStats(config: BufferConfig = defaultConfig()): BufferSt
 export interface TrackerAgentFormat {
   name: string;
   model: string;
+  /** Producing harness (v0.6.0). claude-code | codex. */
+  harness?: string;
   tokens: {
     input_tokens: number;
     output_tokens: number;
     cache_creation_tokens: number;
     cache_read_tokens: number;
     total_effective_tokens: number;
+    /** Cross-harness components (v0.6.0). Undefined → stored NULL. Subsets of gross output, never added. */
+    cached_input_tokens?: number;
+    reasoning_output_tokens?: number;
+    thinking_tokens?: number;
+    tool_tokens?: number;
   };
   duration_ms: number;
 }
@@ -488,15 +501,25 @@ export interface TrackerAgentFormat {
  * @returns Array of tracker-compatible validator objects
  */
 export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerAgentFormat[] {
-  return entries.map((e) => ({
+  return entries
+    // F5: defense-in-depth — skip any entry missing metrics.tokens rather than
+    // TypeError-crash the whole batch (readBuffer already validates, but this
+    // function is public and may receive entries from other sources).
+    .filter((e) => e?.metrics?.tokens != null)
+    .map((e) => ({
     name: e.agent_name || 'unknown',
     model: e.metrics.model,
+    harness: e.metrics.harness,
     tokens: {
       input_tokens: e.metrics.tokens.input,
       output_tokens: e.metrics.tokens.output,
       cache_creation_tokens: e.metrics.tokens.cache_creation,
       cache_read_tokens: e.metrics.tokens.cache_read,
       total_effective_tokens: e.metrics.tokens.total_effective,
+      cached_input_tokens: e.metrics.tokens.cached_input,
+      reasoning_output_tokens: e.metrics.tokens.reasoning_output,
+      thinking_tokens: e.metrics.tokens.thinking,
+      tool_tokens: e.metrics.tokens.tool,
     },
     duration_ms: e.metrics.duration_ms,
   }));

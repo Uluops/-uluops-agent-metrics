@@ -22,6 +22,7 @@ import {
   getBufferStats,
   entriesToTrackerFormat,
   type BufferConfig,
+  type BufferEntry,
 } from './buffer.js';
 import { configureLogger } from './logger.js';
 import { createTestMetrics, TEST_TTL_MS } from './test-utils.js';
@@ -172,6 +173,40 @@ describe('Buffer Module', () => {
       assert.strictEqual(entries.length, 2);
       assert.strictEqual(entries[0].agent_id, metrics.agent_id);
       assert.strictEqual(entries[1].agent_id, 'valid-after-incomplete');
+    });
+
+    it('F5: should skip an entry whose metrics has no tokens', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      // metrics present but no `tokens` — passed the old validator, then crashed
+      // consumers (entriesToTrackerFormat) that dereference metrics.tokens.*.
+      fs.appendFileSync(
+        TEST_CONFIG.bufferPath,
+        '{"agent_id":"no-tokens","session_id":"s","captured_at":"2026-01-01T00:00:00Z","expires_at":"2026-01-01T00:00:00Z","metrics":{"model":"x"}}\n',
+      );
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].agent_id, metrics.agent_id);
+    });
+  });
+
+  describe('entriesToTrackerFormat', () => {
+    it('F5: skips entries missing metrics.tokens instead of throwing (one bad entry must not crash the batch)', () => {
+      const good = {
+        agent_id: 'g', session_id: 's', captured_at: 't', end_time: 't', expires_at: 't',
+        metrics: createTestMetrics({ agent_id: 'g' }),
+      };
+      const bad = {
+        agent_id: 'b', session_id: 's', captured_at: 't', end_time: 't', expires_at: 't',
+        metrics: { model: 'x' },
+      } as unknown as BufferEntry;
+
+      const result = entriesToTrackerFormat([good, bad]);
+
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].harness, 'claude-code');
     });
   });
 

@@ -26,11 +26,15 @@ export interface TokenMetrics {
   cache_creation: number;
   /** Tokens read from cache (cheap) */
   cache_read: number;
-  /** Cached input tokens reported by Codex. OpenAI cached input is discounted, not free; Codex total_effective subtracts these fully only for parity with the existing Claude cache-read formula. */
+  /** Cached input tokens reported by Codex (OpenAI cached input). Subtracted in total_effective — the analog of Claude's excluded cache_read. */
   cached_input?: number;
-  /** Reasoning output tokens reported separately by Codex */
+  /** Reasoning output tokens (OpenAI/Codex). A subset of GROSS output — stored, NOT added to total_effective (it's already inside output). */
   reasoning_output?: number;
-  /** Effective total: Claude uses input + cache_creation + output; Codex uses input - cached_input + output + reasoning_output for provider-local tracker parity, not cost-accurate cross-provider billing. */
+  /** Thinking tokens (Google/Gemini). A subset of GROSS output — stored, NOT added to total_effective. Populated by the future Gemini provider. */
+  thinking?: number;
+  /** Tool-call tokens reported as a component of output. A subset of GROSS output — stored, NOT added to total_effective. */
+  tool?: number;
+  /** Canonical effective total: (input − cached_input) + output_gross + cache_creation. reasoning/thinking/tool are subsets of output and are never added. */
   total_effective: number;
   /** Raw total: all tokens summed */
   total_raw: number;
@@ -63,8 +67,12 @@ export interface ExecutionMetrics {
  * Complete metrics extracted from an agent session file
  */
 export interface AgentMetrics {
-  /** Metrics provider that produced this record */
-  provider: 'claude' | 'codex';
+  /**
+   * Producing harness/runtime that emitted this record. Canonical vocabulary §2.4
+   * (renamed from `provider` in v0.6.0; 'claude' → 'claude-code'). The `provider`
+   * dispatch *option* on ExtractOptions is unrelated and unchanged.
+   */
+  harness: 'claude-code' | 'codex';
   // Identification
   /** Unique agent identifier (e.g., "ac51171") */
   agent_id: string;
