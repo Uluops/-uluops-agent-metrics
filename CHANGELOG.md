@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0] - 2026-06-28
 
+> **First npm release carrying Codex (OpenAI) support.** npm `latest` was `0.4.0`
+> (Claude Code only); `0.5.0`/`0.5.1` (which added the Codex provider and its fixes)
+> were never published. Upgrading from `0.4.0` therefore brings the **entire Codex
+> session-rollout provider** — `--provider codex`, UUIDv7 auto-routing, Codex token
+> fields — *plus* the `0.6.0` cross-harness work below. See the `[0.5.0]` and `[0.5.1]`
+> entries for the Codex provider details.
+
 ### Added
 
 - **Cross-harness token components carried through the tracker wire** (the §1.2
