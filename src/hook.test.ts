@@ -18,6 +18,7 @@ import {
   detectAgentName,
   extractExplicitAgentTag,
   getFirstUserMessageContent,
+  parseHookInput,
   AGENT_ID_PATTERN,
 } from './hook.js';
 
@@ -31,6 +32,29 @@ describe('Hook Module', () => {
 
   after(() => {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  describe('parseHookInput', () => {
+    it('should parse agent_type when present', () => {
+      const result = parseHookInput({
+        session_id: 's1',
+        cwd: '/tmp/proj',
+        agent_id: 'a80e24f',
+        agent_type: 'code-validator',
+      });
+
+      assert.strictEqual(result.agent_type, 'code-validator');
+    });
+
+    it('should omit agent_type when absent or non-string', () => {
+      assert.strictEqual(parseHookInput({ session_id: 's1', cwd: '/tmp' }).agent_type, undefined);
+      assert.strictEqual(parseHookInput({ session_id: 's1', cwd: '/tmp', agent_type: 42 }).agent_type, undefined);
+    });
+
+    it('should return empty object for non-object input', () => {
+      assert.deepStrictEqual(parseHookInput(null), {});
+      assert.deepStrictEqual(parseHookInput('nope'), {});
+    });
   });
 
   describe('isValidAgentId', () => {

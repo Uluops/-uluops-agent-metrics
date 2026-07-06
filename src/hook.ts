@@ -27,6 +27,7 @@ import * as readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { extractMetricsFromFile } from './extractor.js';
 import { appendToBuffer } from './buffer.js';
+import { debug } from './logger.js';
 import { formatModelName } from './utils.js';
 
 interface HookInput {
@@ -34,6 +35,13 @@ interface HookInput {
   transcript_path?: string;
   agent_id?: string;
   agent_transcript_path?: string;
+  /**
+   * Subagent type reported by Claude Code (e.g. "code-validator").
+   * Not guaranteed present — observed in docs-adjacent sources for CC 2.1.x
+   * but unverified against the official hooks reference. Parsed defensively;
+   * the payload-keys debug log in main() confirms empirically per capture.
+   */
+  agent_type?: string;
   cwd: string;
   hook_event_name?: string;
   permission_mode?: string;
@@ -54,6 +62,7 @@ export function parseHookInput(parsed: unknown): Partial<HookInput> {
   if (typeof obj.transcript_path === 'string') result.transcript_path = obj.transcript_path;
   if (typeof obj.agent_transcript_path === 'string') result.agent_transcript_path = obj.agent_transcript_path;
   if (typeof obj.agent_id === 'string') result.agent_id = obj.agent_id;
+  if (typeof obj.agent_type === 'string') result.agent_type = obj.agent_type;
 
   return result;
 }
@@ -222,8 +231,9 @@ async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
     // Extract metrics
     const metrics = await extractMetricsFromFile(expandedPath);
 
-    // Try to detect validator name
-    const agentName = await detectAgentName(expandedPath);
+    // Resolve agent name: explicit [agent:name] tag (workflow-emitted intent)
+    // wins over the harness-reported agent_type, which wins over nameless.
+    const agentName = (await detectAgentName(expandedPath)) || input.agent_type || null;
 
     // Write to buffer
     appendToBuffer(metrics, {
@@ -301,6 +311,14 @@ async function main(): Promise<void> {
     // Read input from stdin
     const inputData = await readStdin();
     const parsed: unknown = JSON.parse(inputData || '{}');
+
+    // Log payload key names (keys only, never values) so the actually-delivered
+    // SubagentStop fields are empirically observable — agent_type is documented
+    // inconsistently across Claude Code versions.
+    if (parsed && typeof parsed === 'object') {
+      debug('SubagentStop payload keys', { keys: Object.keys(parsed) });
+    }
+
     const input = parseHookInput(parsed);
 
     // Handle the hook

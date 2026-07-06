@@ -25,7 +25,7 @@ export function formatBufferStatus(title: string, stats: BufferStats): string {
   lines.push('');
   lines.push(`Total entries:     ${s.totalEntries}`);
   lines.push(`Valid entries:     ${s.validEntries}`);
-  lines.push(`Expired entries:   ${s.expiredEntries}`);
+  lines.push(`Expired entries:   ${s.expiredEntries} (eligible for GC on next capture)`);
   lines.push(`Unique sessions:   ${s.uniqueSessions}`);
   lines.push(`Unique agents:     ${s.uniqueAgents}`);
   lines.push(`Buffer size:       ${(s.bufferSizeBytes / 1024).toFixed(1)} KB`);
@@ -72,7 +72,9 @@ export function formatBufferList(entries: BufferEntry[]): string {
   lines.push('─'.repeat(100));
 
   for (const entry of entries) {
-    const agentName = (entry.agent_name || 'unknown').slice(0, 25).padEnd(25);
+    const agentName = (entry.agent_name || projectName(entry.project_path) || entry.agent_id)
+      .slice(0, 25)
+      .padEnd(25);
     const duration = entry.metrics.duration_formatted.padEnd(8);
     const tokens = formatTokens(entry.metrics.tokens.total_effective).padEnd(8);
     const captured = new Date(entry.captured_at).toLocaleString().slice(0, 20);

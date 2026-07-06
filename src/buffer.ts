@@ -42,7 +42,7 @@ export interface BufferEntry {
 export interface BufferConfig {
   /** Path to buffer file */
   bufferPath: string;
-  /** Default TTL in milliseconds (default: 24 hours) */
+  /** Default TTL in milliseconds (default: 30 days, matching Claude Code transcript retention) */
   defaultTTL: number;
   /** Lock acquisition timeout in milliseconds (default: 5000) */
   lockTimeoutMs?: number;
@@ -51,7 +51,11 @@ export interface BufferConfig {
 function defaultConfig(): BufferConfig {
   return {
     bufferPath: path.join(os.homedir(), '.claude', 'agent-metrics-buffer.jsonl'),
-    defaultTTL: 24 * 60 * 60 * 1000, // 24 hours
+    // 30 days, aligned with Claude Code's transcript retention (cleanupPeriodDays
+    // default). The buffer is a cache over transcripts; expiring entries while
+    // their source transcripts still exist just forces re-extraction for no
+    // storage win (~1KB/entry). Entries are GC'd opportunistically on append.
+    defaultTTL: 30 * 24 * 60 * 60 * 1000,
   };
 }
 
@@ -144,10 +148,11 @@ function isExpired(entry: BufferEntry, now: Date): boolean {
  * @param options - Optional configuration for the buffer entry
  * @param options.agentName - Name of the agent that produced these metrics
  * @param options.projectPath - Project path where the agent ran
- * @param options.ttlMs - Time-to-live in milliseconds (default: 24 hours)
+ * @param options.ttlMs - Time-to-live in milliseconds (default: 30 days)
  * @param options.config - Buffer configuration override
  * @param options.source - Source of capture: 'hook', 'cli', or 'api'
- * @returns The created buffer entry
+ * @returns The created buffer entry, or null if the append was skipped because
+ *   the buffer lock could not be acquired (fail-closed under lock contention)
  */
 export function appendToBuffer(
   metrics: AgentMetrics,
@@ -159,7 +164,7 @@ export function appendToBuffer(
     /** Source of the capture: 'hook', 'cli', or 'api' */
     source?: 'hook' | 'cli' | 'api';
   } = {}
-): BufferEntry {
+): BufferEntry | null {
   const config = options.config || defaultConfig();
   const ttl = options.ttlMs ?? config.defaultTTL;
 
@@ -184,7 +189,17 @@ export function appendToBuffer(
   const lockAcquired = acquireLock(lockPath, lockTimeoutMs);
 
   if (!lockAcquired) {
-    process.stderr.write(`Warning: Could not acquire lock for ${config.bufferPath}, proceeding without lock\n`);
+    // Fail closed. Under sustained parallel-SubagentStop contention an unlocked
+    // appendFileSync of a multi-KB line can interleave with a concurrent writer
+    // and corrupt both lines (readBuffer then silently drops them — losing two
+    // metrics plus leaving garbage). Skipping loses at most this one best-effort
+    // metric, deterministically, and never corrupts another writer's entry. The
+    // 5s exponential-backoff retry in acquireLock has already run, so this only
+    // fires when the lock is genuinely stuck.
+    process.stderr.write(
+      `Warning: Could not acquire lock for ${config.bufferPath} within ${lockTimeoutMs}ms; skipping metric capture to avoid buffer corruption\n`
+    );
+    return null;
   }
 
   try {
@@ -216,6 +231,15 @@ export function appendToBuffer(
     if (lockAcquired) {
       releaseLock(lockPath);
     }
+  }
+
+  // Opportunistic GC. Must run after the append lock is released —
+  // cleanupExpired takes the same (non-reentrant) file lock. Best-effort:
+  // a GC failure must never fail the capture that triggered it.
+  try {
+    cleanupExpired(config);
+  } catch {
+    // ignore — next append retries
   }
 
   return entry;
@@ -369,10 +393,58 @@ function removeWhere(
     const removedCount = allEntries.length - remaining.length;
 
     if (removedCount > 0) {
-      fs.writeFileSync(config.bufferPath, toJsonlContent(remaining), 'utf-8');
+      // Atomic rewrite: write to a sibling temp file then rename into place.
+      // A direct writeFileSync truncates-then-writes, so a crash or ENOSPC
+      // mid-write would leave the buffer empty or half-written, losing all
+      // still-buffered un-shipped metrics (the lock guards concurrency, not
+      // crash-atomicity). rename(2) on the same filesystem is atomic, so a
+      // crash leaves either the complete old file or the complete new one.
+      // Same pattern as the log rotation in logger.ts.
+      const tmpPath = config.bufferPath + '.tmp';
+      fs.writeFileSync(tmpPath, toJsonlContent(remaining), 'utf-8');
+      fs.renameSync(tmpPath, config.bufferPath);
     }
 
     return removedCount;
+  });
+}
+
+/**
+ * Write agent names onto matching buffer entries, under file lock.
+ *
+ * Used by the extract command to persist caller-supplied names
+ * (--agent-name/--agent-names) back to the buffer, so entries captured
+ * nameless (no [agent:name] tag) become name-complete for later queries.
+ * Caller-supplied names are authoritative and overwrite existing ones.
+ *
+ * @param names - Map of agent_id to agent name
+ * @param config - Buffer configuration (optional, uses defaults)
+ * @returns Number of entries updated
+ */
+export function annotateBufferEntries(
+  names: Record<string, string>,
+  config: BufferConfig = defaultConfig(),
+): number {
+  return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
+    const allEntries = readBuffer(config);
+    let updated = 0;
+
+    for (const entry of allEntries) {
+      const name = names[entry.agent_id];
+      if (name && entry.agent_name !== name) {
+        entry.agent_name = name;
+        updated++;
+      }
+    }
+
+    if (updated > 0) {
+      // Same atomic temp-file + rename pattern as removeWhere.
+      const tmpPath = config.bufferPath + '.tmp';
+      fs.writeFileSync(tmpPath, toJsonlContent(allEntries), 'utf-8');
+      fs.renameSync(tmpPath, config.bufferPath);
+    }
+
+    return updated;
   });
 }
 
@@ -473,6 +545,8 @@ export function getBufferStats(config: BufferConfig = defaultConfig()): BufferSt
  */
 export interface TrackerAgentFormat {
   name: string;
+  /** Transcript/agent provenance id (v0.7.0). Joins tracker rows to buffer entries and transcripts. */
+  agent_id?: string;
   model: string;
   /** Producing harness (v0.6.0). claude-code | codex. */
   harness?: string;
@@ -507,7 +581,11 @@ export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerAgentForm
     // function is public and may receive entries from other sources).
     .filter((e) => e?.metrics?.tokens != null)
     .map((e) => ({
-    name: e.agent_name || 'unknown',
+    // Fall back to agent_id, not 'unknown': tracker saves enforce unique
+    // agent names per run, so multiple nameless entries under a literal
+    // 'unknown' would collide (409). The id is unique and joinable.
+    name: e.agent_name || e.agent_id,
+    agent_id: e.agent_id,
     model: e.metrics.model,
     harness: e.metrics.harness,
     tokens: {

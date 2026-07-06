@@ -10,6 +10,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import {
+  annotateBufferEntries,
   appendToBuffer,
   readBuffer,
   readValidEntries,
@@ -39,6 +40,29 @@ const TEST_CONFIG_FAST_LOCK: BufferConfig = {
   ...TEST_CONFIG,
   lockTimeoutMs: 100, // 100ms timeout for faster lock timeout tests
 };
+
+/**
+ * Write an entry directly to the buffer file, bypassing appendToBuffer.
+ * appendToBuffer GC's expired entries opportunistically (v0.7.0), so tests
+ * that need already-expired entries present must set them up out-of-band.
+ */
+function writeRawEntry(
+  metrics: ReturnType<typeof createTestMetrics>,
+  ttlMs: number,
+  config: BufferConfig = TEST_CONFIG,
+): BufferEntry {
+  const now = new Date();
+  const entry: BufferEntry = {
+    agent_id: metrics.agent_id,
+    session_id: metrics.session_id,
+    captured_at: now.toISOString(),
+    end_time: metrics.end_time,
+    expires_at: new Date(now.getTime() + ttlMs).toISOString(),
+    metrics,
+  };
+  fs.appendFileSync(config.bufferPath, JSON.stringify(entry) + '\n');
+  return entry;
+}
 
 describe('Buffer Module', () => {
   before(() => {
@@ -74,6 +98,7 @@ describe('Buffer Module', () => {
       const metrics = createTestMetrics();
       const entry = appendToBuffer(metrics, { config: TEST_CONFIG });
 
+      assert.ok(entry, 'entry should be written when the lock is free');
       assert.strictEqual(entry.agent_id, metrics.agent_id);
       assert.strictEqual(entry.session_id, metrics.session_id);
       assert.ok(entry.captured_at);
@@ -106,6 +131,7 @@ describe('Buffer Module', () => {
         config: TEST_CONFIG,
       });
 
+      assert.ok(entry, 'entry should be written when the lock is free');
       assert.strictEqual(entry.agent_name, 'code-validator');
       assert.strictEqual(entry.project_path, '/path/to/project');
     });
@@ -115,6 +141,7 @@ describe('Buffer Module', () => {
       const shortTTL = 1000; // 1 second
       const entry = appendToBuffer(metrics, { ttlMs: shortTTL, config: TEST_CONFIG });
 
+      assert.ok(entry, 'entry should be written when the lock is free');
       const capturedAt = new Date(entry.captured_at).getTime();
       const expiresAt = new Date(entry.expires_at).getTime();
       assert.strictEqual(expiresAt - capturedAt, shortTTL);
@@ -131,9 +158,10 @@ describe('Buffer Module', () => {
       const expiredMetrics = createTestMetrics({ agent_id: 'expired-read-agent' });
       const validMetrics = createTestMetrics({ agent_id: 'valid-read-agent' });
 
-      // Add one with very short TTL (already expired)
-      appendToBuffer(expiredMetrics, { ttlMs: -1000, config: TEST_CONFIG });
+      // Valid entry first — appendToBuffer GC's expired entries, so the
+      // expired one is written raw afterwards.
       appendToBuffer(validMetrics, { config: TEST_CONFIG });
+      writeRawEntry(expiredMetrics, -1000);
 
       const entries = readBuffer(TEST_CONFIG);
       assert.strictEqual(entries.length, 2);
@@ -250,8 +278,8 @@ describe('Buffer Module', () => {
     });
 
     it('should include expired entries when requested', () => {
-      appendToBuffer(createTestMetrics(), { ttlMs: -1000, config: TEST_CONFIG });
       appendToBuffer(createTestMetrics(), { config: TEST_CONFIG });
+      writeRawEntry(createTestMetrics(), -1000);
 
       const withExpired = queryBuffer({ includeExpired: true }, TEST_CONFIG);
       const withoutExpired = queryBuffer({ includeExpired: false }, TEST_CONFIG);
@@ -261,7 +289,7 @@ describe('Buffer Module', () => {
     });
 
     it('should treat TTL=0 entries as immediately expired', () => {
-      appendToBuffer(createTestMetrics(), { ttlMs: 0, config: TEST_CONFIG });
+      writeRawEntry(createTestMetrics(), 0);
 
       const withExpired = queryBuffer({ includeExpired: true }, TEST_CONFIG);
       const withoutExpired = queryBuffer({ includeExpired: false }, TEST_CONFIG);
@@ -308,15 +336,62 @@ describe('Buffer Module', () => {
 
   describe('cleanupExpired', () => {
     it('should remove expired entries and return count', () => {
-      appendToBuffer(createTestMetrics(), { ttlMs: -1000, config: TEST_CONFIG });
-      appendToBuffer(createTestMetrics(), { ttlMs: -1000, config: TEST_CONFIG });
       appendToBuffer(createTestMetrics(), { config: TEST_CONFIG });
+      writeRawEntry(createTestMetrics(), -1000);
+      writeRawEntry(createTestMetrics(), -1000);
 
       const removedCount = cleanupExpired(TEST_CONFIG);
       assert.strictEqual(removedCount, 2);
 
       const remaining = readBuffer(TEST_CONFIG);
       assert.strictEqual(remaining.length, 1);
+    });
+
+    it('should run opportunistically on append', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'gc-valid-1' }), { config: TEST_CONFIG });
+      writeRawEntry(createTestMetrics({ agent_id: 'gc-expired' }), -1000);
+
+      // The next append should GC the expired entry
+      appendToBuffer(createTestMetrics({ agent_id: 'gc-valid-2' }), { config: TEST_CONFIG });
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 2);
+      assert.ok(!entries.some((e) => e.agent_id === 'gc-expired'), 'expired entry should be GC\'d by append');
+    });
+  });
+
+  describe('annotateBufferEntries', () => {
+    it('should write names onto matching entries and return count', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'annotate-1' }), { config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics({ agent_id: 'annotate-2' }), { config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics({ agent_id: 'annotate-3' }), { agentName: 'already-named', config: TEST_CONFIG });
+
+      const updated = annotateBufferEntries(
+        { 'annotate-1': 'code-validator', 'annotate-2': 'test-architect', 'no-such-id': 'ghost' },
+        TEST_CONFIG,
+      );
+
+      assert.strictEqual(updated, 2);
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.find((e) => e.agent_id === 'annotate-1')?.agent_name, 'code-validator');
+      assert.strictEqual(entries.find((e) => e.agent_id === 'annotate-2')?.agent_name, 'test-architect');
+      assert.strictEqual(entries.find((e) => e.agent_id === 'annotate-3')?.agent_name, 'already-named');
+    });
+
+    it('should overwrite existing names (caller-supplied is authoritative)', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'annotate-ow' }), { agentName: 'stale-name', config: TEST_CONFIG });
+
+      const updated = annotateBufferEntries({ 'annotate-ow': 'fresh-name' }, TEST_CONFIG);
+
+      assert.strictEqual(updated, 1);
+      assert.strictEqual(readBuffer(TEST_CONFIG)[0]?.agent_name, 'fresh-name');
+    });
+
+    it('should be a no-op when names already match', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'annotate-same' }), { agentName: 'same-name', config: TEST_CONFIG });
+
+      const updated = annotateBufferEntries({ 'annotate-same': 'same-name' }, TEST_CONFIG);
+      assert.strictEqual(updated, 0);
     });
   });
 
@@ -353,11 +428,33 @@ describe('Buffer Module', () => {
     });
   });
 
+  describe('Atomic rewrite (crash-safety)', () => {
+    it('rewrites the buffer via temp+rename, leaving surviving entries intact and no .tmp behind', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'keep-1', session_id: 's-keep' }), { config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics({ agent_id: 'drop-1', session_id: 's-drop' }), { config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics({ agent_id: 'keep-2', session_id: 's-keep' }), { config: TEST_CONFIG });
+
+      const removed = clearSession('s-drop', TEST_CONFIG);
+      assert.strictEqual(removed, 1);
+
+      // Surviving entries are intact and uncorrupted.
+      const remaining = readBuffer(TEST_CONFIG);
+      assert.strictEqual(remaining.length, 2);
+      assert.deepStrictEqual(
+        remaining.map((e) => e.agent_id).sort(),
+        ['keep-1', 'keep-2'],
+      );
+
+      // The sibling temp file must not linger after the atomic rename.
+      assert.ok(!fs.existsSync(TEST_CONFIG.bufferPath + '.tmp'), 'No .tmp file should remain after rewrite');
+    });
+  });
+
   describe('getBufferStats', () => {
     it('should return accurate statistics', () => {
       appendToBuffer(createTestMetrics({ agent_id: 'stats-agent-valid-1', session_id: 'stats-session-active' }), { config: TEST_CONFIG });
       appendToBuffer(createTestMetrics({ agent_id: 'stats-agent-valid-2', session_id: 'stats-session-active' }), { config: TEST_CONFIG });
-      appendToBuffer(createTestMetrics({ agent_id: 'stats-agent-expired', session_id: 'stats-session-expired' }), { ttlMs: -1000, config: TEST_CONFIG });
+      writeRawEntry(createTestMetrics({ agent_id: 'stats-agent-expired', session_id: 'stats-session-expired' }), -1000);
 
       const stats = getBufferStats(TEST_CONFIG);
 
@@ -409,7 +506,7 @@ describe('Buffer Module', () => {
   });
 
   describe('Lock Acquisition Edge Cases', () => {
-    it('should proceed with warning when lock cannot be acquired', () => {
+    it('should fail closed (skip + warn) when lock cannot be acquired', () => {
       // Create a lock file that will block acquisition
       const lockPath = TEST_CONFIG_FAST_LOCK.bufferPath + '.lock';
       fs.writeFileSync(lockPath, String(process.pid));
@@ -425,15 +522,17 @@ describe('Buffer Module', () => {
       }) as typeof process.stderr.write;
 
       try {
-        // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing
-        // Since the lock is fresh (not stale), it won't be removed
-        // The function should eventually proceed without lock after timeout
+        // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing.
+        // The lock is fresh (not stale), so it won't be removed; acquisition
+        // times out and appendToBuffer fails closed — it skips the write rather
+        // than racing an unlocked append that could corrupt the buffer.
         const metrics = createTestMetrics();
-        appendToBuffer(metrics, { config: TEST_CONFIG_FAST_LOCK });
+        const result = appendToBuffer(metrics, { config: TEST_CONFIG_FAST_LOCK });
 
-        // Entry should still be written
+        // Entry should NOT be written, and the call returns null to signal the skip.
+        assert.strictEqual(result, null, 'Should return null when the append is skipped');
         const entries = readBuffer(TEST_CONFIG_FAST_LOCK);
-        assert.ok(entries.length >= 1, 'Entry should be written even with lock contention');
+        assert.strictEqual(entries.length, 0, 'Entry should be skipped, not raced, under lock contention');
         assert.ok(warningLogged, 'Should log a warning about lock acquisition failure');
       } finally {
         process.stderr.write = originalWrite;
@@ -482,14 +581,16 @@ describe('Buffer Module', () => {
       }) as typeof process.stderr.write;
 
       try {
-        // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing
-        // Should still succeed (proceeds without lock after timeout)
+        // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing.
+        // A 29s-old lock is under the 30s stale threshold, so it is NOT removed;
+        // acquisition times out and appendToBuffer fails closed (skips the write).
         const metrics = createTestMetrics();
-        appendToBuffer(metrics, { config: TEST_CONFIG_FAST_LOCK });
+        const result = appendToBuffer(metrics, { config: TEST_CONFIG_FAST_LOCK });
 
-        // Entry should still be written
+        // Entry should be skipped because the sub-threshold lock was not removed.
+        assert.strictEqual(result, null, 'Should return null when the append is skipped');
         const entries = readBuffer(TEST_CONFIG_FAST_LOCK);
-        assert.ok(entries.length >= 1, 'Entry should be written');
+        assert.strictEqual(entries.length, 0, 'Entry should be skipped (lock not stale → not removed)');
         assert.ok(warningLogged, 'Should warn about lock acquisition failure');
       } finally {
         process.stderr.write = originalWrite;
@@ -616,6 +717,7 @@ describe('Buffer Module', () => {
       const entry = appendToBuffer(metrics, { ttlMs: 0, config: TEST_CONFIG });
       const afterCreate = Date.now();
 
+      assert.ok(entry, 'entry should be written when the lock is free');
       // Entry expires_at should be between beforeCreate and afterCreate
       const expiresAt = new Date(entry.expires_at).getTime();
 
@@ -649,7 +751,7 @@ describe('Buffer Module', () => {
 
     it('should handle negative TTL as already expired', () => {
       const metrics = createTestMetrics();
-      appendToBuffer(metrics, { ttlMs: -1000, config: TEST_CONFIG });
+      writeRawEntry(metrics, -1000);
 
       const validEntries = readValidEntries(TEST_CONFIG);
       assert.strictEqual(validEntries.length, 0, 'Negative TTL should create expired entry');
@@ -678,6 +780,7 @@ describe('Buffer Module', () => {
         config: TEST_CONFIG,
       });
 
+      assert.ok(entry, 'entry should be written when the lock is free');
       const result = entriesToTrackerFormat([entry]);
       assert.strictEqual(result.length, 1);
       assert.strictEqual(result[0].name, 'code-validator');
@@ -690,12 +793,25 @@ describe('Buffer Module', () => {
       assert.strictEqual(result[0].tokens.total_effective_tokens, 600);
     });
 
-    it('should use "unknown" for missing agent name', () => {
+    it('should fall back to agent_id for missing agent name', () => {
       const metrics = createTestMetrics();
       const entry = appendToBuffer(metrics, { config: TEST_CONFIG });
 
+      assert.ok(entry, 'entry should be written when the lock is free');
       const result = entriesToTrackerFormat([entry]);
-      assert.strictEqual(result[0].name, 'unknown');
+      // agent_id, not 'unknown': tracker saves enforce unique agent names
+      // per run, so nameless entries must not collide on a shared literal.
+      assert.strictEqual(result[0].name, entry.agent_id);
+    });
+
+    it('should include agent_id for provenance', () => {
+      const metrics = createTestMetrics({ agent_id: 'prov-agent-1' });
+      const entry = appendToBuffer(metrics, { agentName: 'code-validator', config: TEST_CONFIG });
+
+      assert.ok(entry, 'entry should be written when the lock is free');
+      const result = entriesToTrackerFormat([entry]);
+      assert.strictEqual(result[0].agent_id, 'prov-agent-1');
+      assert.strictEqual(result[0].name, 'code-validator');
     });
 
     it('should handle empty array', () => {

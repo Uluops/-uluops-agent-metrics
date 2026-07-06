@@ -23,7 +23,7 @@ import {
   getProjectName,
 } from '../utils.js';
 import { extractCodexMetricsFromFile } from '../codex-extractor.js';
-import { queryBuffer } from '../buffer.js';
+import { annotateBufferEntries, queryBuffer } from '../buffer.js';
 import {
   formatAgentList,
   formatAgentListError,
@@ -107,6 +107,8 @@ export function registerCoreCommands(program: Command): void {
 
         // Batch extract
         const jsonResults: unknown[] = [];
+        // Caller-supplied names collected for buffer write-back after the loop
+        const suppliedNames: Record<string, string> = {};
 
         for (let i = 0; i < agentIds.length; i++) {
           const agentId = agentIds[i]!;
@@ -126,6 +128,9 @@ export function registerCoreCommands(program: Command): void {
 
           // Resolve agent name: --agent-names (batch) > --agent-name (single) > buffer lookup
           let agentName = nameList?.[i] || options.agentName;
+          if (agentName) {
+            suppliedNames[agentId] = agentName;
+          }
           if (!agentName) {
             const bufferEntries = queryBuffer({ agentId });
             const bufferEntry = bufferEntries.find(e => e.agent_id === agentId);
@@ -145,6 +150,17 @@ export function registerCoreCommands(program: Command): void {
             case 'json':
               jsonResults.push(metrics);
               break;
+          }
+        }
+
+        // Write caller-supplied names back to the buffer so entries captured
+        // nameless (no [agent:name] tag) become name-complete for later
+        // queries. Best-effort: annotation failure must not fail the extract.
+        if (Object.keys(suppliedNames).length > 0) {
+          try {
+            annotateBufferEntries(suppliedNames);
+          } catch {
+            // ignore — extract output is already complete
           }
         }
 
@@ -243,12 +259,16 @@ export function registerCoreCommands(program: Command): void {
     .command('compare <agent-ids...>')
     .description('Compare metrics across multiple agent runs')
     .option('-p, --project <path>', 'Project path to search in')
-    .action(async (agentIds: string[], options: { project?: string }) => {
+    .addOption(providerOption())
+    .action(async (agentIds: string[], options: { project?: string; provider: MetricsProvider }) => {
       try {
+        // 'auto' (default) detects the harness per agent ID, so a mixed
+        // Claude+Codex comparison resolves each side correctly. An explicit
+        // --provider forces all IDs to one harness (parity with extract/list/find).
         const items: CompareItem[] = await Promise.all(
           agentIds.map(async (agentId) => ({
             agentId,
-            metrics: await extractAgentMetrics(agentId, { projectPath: options.project }),
+            metrics: await extractAgentMetrics(agentId, { projectPath: options.project, provider: options.provider }),
           }))
         );
 

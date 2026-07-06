@@ -195,6 +195,11 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
       output: acc.outputTokens,
       cache_creation: acc.cacheCreationTokens,
       cache_read: acc.cacheReadTokens,
+      // Canonical effective total (see TokenMetrics.total_effective in types.ts):
+      // (input − cached_input) + output_gross + cache_creation. Claude's `input`
+      // is already non-cached (cache reads are the separate cache_read field) and
+      // it has no cached_input term (0), so this is commensurable with the Codex
+      // formula in codex-extractor.ts, which carries cached_input instead.
       total_effective: acc.inputTokens + acc.cacheCreationTokens + acc.outputTokens,
       total_raw: acc.inputTokens + acc.outputTokens + acc.cacheCreationTokens + acc.cacheReadTokens,
     },
@@ -355,6 +360,8 @@ export interface TrackerTokens {
  */
 export interface TrackerFormat {
   name: string;
+  /** Transcript/agent provenance id (v0.7.0). Joins tracker rows to buffer entries and transcripts. */
+  agent_id: string;
   model: string;
   /** Producing harness (v0.6.0). claude-code | codex. */
   harness?: string;
@@ -363,7 +370,13 @@ export interface TrackerFormat {
 }
 
 /**
- * Convert metrics to tracker-compatible format
+ * Convert metrics to tracker-compatible format.
+ *
+ * Lossy boundary by design: `total_raw` and `model_provider` are intentionally
+ * dropped here. The tracker's agent-token schema has no field for either, and
+ * both are reconstructable downstream — `total_raw` from the emitted components
+ * and the provider from the preserved `harness`/`model`. Re-pricing components
+ * (cached_input, reasoning_output, thinking, tool) ARE preserved (v0.6.0).
  *
  * @param metrics - AgentMetrics object
  * @param agentName - Name of the agent
@@ -375,6 +388,7 @@ export function toTrackerFormat(
 ): TrackerFormat {
   return {
     name: agentName,
+    agent_id: metrics.agent_id,
     model: metrics.model,
     harness: metrics.harness,
     tokens: {

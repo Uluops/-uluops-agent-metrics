@@ -161,11 +161,21 @@ describe('Display Formatters', () => {
       assert.ok(!result.includes('truncated-here'));
     });
 
-    it('should handle missing agent name', () => {
+    it('should fall back to project name for missing agent name', () => {
       const entries = [createMockBufferEntry({ agent_name: undefined })];
       const result = formatBufferList(entries);
 
-      assert.ok(result.includes('unknown'));
+      // ADR-0001: untagged entries fall back to the project directory name
+      assert.ok(result.includes('test-project'));
+      assert.ok(!result.includes('unknown'));
+    });
+
+    it('should fall back to agent_id when project path is also missing', () => {
+      const entries = [createMockBufferEntry({ agent_name: undefined, project_path: undefined })];
+      const result = formatBufferList(entries);
+
+      assert.ok(result.includes('abc1234'));
+      assert.ok(!result.includes('unknown'));
     });
   });
 

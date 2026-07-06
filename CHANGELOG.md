@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+### Added
+
+- **`agent_id` on tracker formats.** `toTrackerFormat` and `entriesToTrackerFormat`
+  now emit the transcript/agent provenance id, making tracker rows joinable to
+  buffer entries and transcripts (previously required token-value forensics).
+- **Name write-back on extract.** Caller-supplied names (`--agent-name` /
+  `--agent-names`) are persisted onto matching buffer entries via new
+  `annotateBufferEntries()`, so entries captured nameless become name-complete
+  for later queries. Best-effort; never fails the extract.
+- **Hook parses `agent_type`.** SubagentStop name resolution is now explicit
+  `[agent:name]` tag → harness-reported `agent_type` → nameless. The hook also
+  debug-logs payload key names (keys only) so the actually-delivered fields are
+  empirically observable — `agent_type` is documented inconsistently across
+  Claude Code versions.
+
+### Changed
+
+- **Buffer TTL 24h → 30 days**, aligned with Claude Code transcript retention
+  (`cleanupPeriodDays` default). The old 24h label was cosmetic — nothing
+  auto-deleted, so 95%+ of entries sat "expired" but present.
+- **Expiry is now real: GC-on-append.** `appendToBuffer` opportunistically runs
+  `cleanupExpired()` after each capture (own lock; best-effort). Entries past
+  TTL are actually removed rather than accumulating behind a `-a` flag.
+- **Display fallback honors ADR-0001.** Untagged entries in `buffer list` show
+  the project directory name (then agent id) instead of the literal `unknown`.
+  `entriesToTrackerFormat` falls back to `agent_id` for the name — tracker saves
+  enforce unique agent names per run, so a shared `unknown` literal collides.
+
 ## [0.6.0] - 2026-06-28
 
 > **First npm release carrying Codex (OpenAI) support.** npm `latest` was `0.4.0`
