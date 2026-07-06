@@ -146,5 +146,30 @@ describe('Lock Module', () => {
       const result: string[] = withFileLock(lockPath, 5000, () => ['a', 'b']);
       assert.deepStrictEqual(result, ['a', 'b']);
     });
+
+    it('should fail closed: throw LockAcquisitionError and NOT run fn when lock is held', () => {
+      const lockPath = path.join(TEST_DIR, 'with-contended.lock');
+      // Simulate a live holder (fresh mtime, so not stale-reclaimed)
+      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+
+      let fnRan = false;
+      try {
+        assert.throws(
+          () => withFileLock(lockPath, 100, () => { fnRan = true; }),
+          { name: 'LockAcquisitionError' },
+        );
+        assert.strictEqual(fnRan, false, 'fn must not run without the lock');
+        assert.ok(fs.existsSync(lockPath), 'Held lock must not be released by the failed acquirer');
+      } finally {
+        fs.unlinkSync(lockPath);
+      }
+    });
+
+    it('should create the lock parent directory when missing', () => {
+      const lockPath = path.join(TEST_DIR, 'no-such-dir', 'nested', 'x.lock');
+      const result = withFileLock(lockPath, 5000, () => 'ok');
+      assert.strictEqual(result, 'ok');
+      assert.ok(!fs.existsSync(lockPath), 'Lock released after');
+    });
   });
 });

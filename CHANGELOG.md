@@ -26,6 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (behavior): buffer-rewrite operations are fail-closed.**
+  `withFileLock` now throws `LockAcquisitionError` (new export) instead of
+  running the callback unlocked when the lock cannot be acquired — an unlocked
+  read-modify-rewrite could rename a stale snapshot over the buffer and
+  silently destroy concurrently-captured entries. Affects the exported
+  `cleanupExpired`, `clearSession`, `clearAgents`, and `annotateBufferEntries`:
+  they now throw on lock contention where they previously proceeded unlocked.
+  Internal best-effort callers (GC-on-append, extract write-back) catch and
+  skip; the `buffer clear` CLI reports a clean locked-buffer message. Rewrites
+  also use unique per-writer temp names (stale-lock reclaim can still admit a
+  second writer; unique names bound that to last-rename-wins, never a torn file),
+  and the hook enforces that the persisted `agent_id` join key equals the
+  pattern-validated hook id.
 - **Buffer TTL 24h → 30 days**, aligned with Claude Code transcript retention
   (`cleanupPeriodDays` default). The old 24h label was cosmetic — nothing
   auto-deleted, so 95%+ of entries sat "expired" but present.

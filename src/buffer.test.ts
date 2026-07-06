@@ -804,6 +804,27 @@ describe('Buffer Module', () => {
       assert.strictEqual(result[0].name, entry.agent_id);
     });
 
+    it('should drop entries whose core token fields are not numbers (F5 delta)', () => {
+      // tokens object EXISTS but its numbers don't — must fail validation,
+      // not flow undefined token counts into tracker rows.
+      appendToBuffer(createTestMetrics({ agent_id: 'f5-good' }), { config: TEST_CONFIG });
+      const bad = {
+        agent_id: 'f5-bad',
+        session_id: 's',
+        captured_at: new Date().toISOString(),
+        end_time: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60000).toISOString(),
+        metrics: { model: 'x', tokens: { input: '5', output: 2 } },
+      };
+      fs.appendFileSync(TEST_CONFIG.bufferPath, JSON.stringify(bad) + '\n');
+      const empty = { ...bad, agent_id: 'f5-empty', metrics: { model: 'x', tokens: {} } };
+      fs.appendFileSync(TEST_CONFIG.bufferPath, JSON.stringify(empty) + '\n');
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1, 'non-numeric/empty-token entries must be rejected');
+      assert.strictEqual(entries[0]?.agent_id, 'f5-good');
+    });
+
     it('should include agent_id for provenance', () => {
       const metrics = createTestMetrics({ agent_id: 'prov-agent-1' });
       const entry = appendToBuffer(metrics, { agentName: 'code-validator', config: TEST_CONFIG });

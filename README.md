@@ -4,17 +4,26 @@
 
 # Agent Metrics
 
-Extract accurate metrics from Claude Code and Codex agent session files.
+Extract accurate, normalized metrics from agent session files across coding harnesses.
 
 ## Overview
 
-Claude Code stores detailed execution data for every agent (Task tool) invocation in JSONL files under `~/.claude/projects/`. Codex stores local session rollouts under `~/.codex/sessions/`. This utility extracts and aggregates both formats to provide accurate token counts, timing, and execution statistics.
+Coding harnesses each record detailed execution data for every agent invocation, in their own on-disk format. This utility reads those formats and normalizes them into one shape — accurate token counts, timing, and execution statistics — so metrics are comparable across harnesses regardless of which one produced them. Each record carries a `harness` field identifying its origin.
+
+**Supported harnesses:**
+
+- **Claude Code** — agent (Task tool) session files under `~/.claude/projects/`
+- **Codex** — subagent session rollouts under `~/.codex/sessions/` (or `$CODEX_HOME/sessions/`)
+- **Planned** — Gemini CLI and OpenCode. The extractor architecture is harness-agnostic (a per-harness reader feeding a shared normalizer), so adding a harness does not change the public output shape.
+
+Harness selection is per-command via `--provider auto|claude|codex` (default `auto` detects the harness from the agent ID). The normalized output and the tracker wire format are identical across harnesses; harness-specific token components (e.g. Codex `cached_input`, `reasoning_output`) are carried as additive optional fields.
 
 ## Prerequisites
 
 - **Node.js 18+** — Required for ESM support
-- **Claude Code** — Agent session files are created by Claude Code's Task tool in `~/.claude/projects/`
-- **Codex** — Optional; subagent session rollouts are read from `~/.codex/sessions/` or `$CODEX_HOME/sessions/`
+- **At least one supported harness:**
+  - **Claude Code** — agent session files in `~/.claude/projects/`
+  - **Codex** — optional; subagent rollouts in `~/.codex/sessions/` or `$CODEX_HOME/sessions/`
 
 ## Installation
 
@@ -238,6 +247,7 @@ Ready for `save_run`:
 ```json
 {
   "name": "prompt-quality-validator",
+  "agent_id": "a80e24f1c2d3e4f5a",
   "model": "claude-sonnet-4-5-20250929",
   "tokens": {
     "input_tokens": 63903,
@@ -249,6 +259,9 @@ Ready for `save_run`:
   "duration_ms": 113126
 }
 ```
+
+`agent_id` (v0.7.0) is the transcript/agent provenance id — it makes the saved
+tracker row joinable back to its buffer entry and session transcript.
 
 ## Token Calculations
 
@@ -556,7 +569,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | `report [-n limit] [-s session] [--current] [--provider auto|claude|codex]` | Show recent Claude-buffer auto-captured metrics; `codex` exits with guidance because report is buffer-backed |
 | `list [-n <limit>] [-p project] [--provider auto|claude|codex]` | List recent agent runs from session files |
 | `extract <ids...> [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
-| `compare <id...>` | Compare multiple agents side-by-side |
+| `compare <id...> [-p project] [--provider auto|claude|codex]` | Compare multiple agents side-by-side (`auto` resolves each id's harness independently, so a mixed Claude+Codex comparison works) |
 | `find <id> [-p project] [--provider auto|claude|codex]` | Find the file location for an agent |
 | `examples` | Show usage examples for common workflows |
 
@@ -639,7 +652,18 @@ The agent-metrics hook automatically captures metrics when any Task tool agent c
 2. The hook receives the agent's transcript path (`~/.claude/projects/.../agent-{id}.jsonl`)
 3. agent-metrics extracts tokens, timing, and execution stats from the transcript
 4. Metrics are written to a global buffer (`~/.claude/agent-metrics-buffer.jsonl`)
-5. Buffer entries expire after 24 hours (configurable)
+5. Buffer entries expire after 30 days (configurable), aligned with Claude Code
+   transcript retention; expired entries are garbage-collected opportunistically
+   on the next append (v0.7.0 — expiry is enforced, not a passive label)
+
+> **BREAKING (v0.7.0):** buffer-rewrite operations are fail-closed. When the
+> buffer lock cannot be acquired, `cleanupExpired`, `clearSession`,
+> `clearAgents`, and `annotateBufferEntries` now throw `LockAcquisitionError`
+> (exported) instead of proceeding unlocked — an unlocked read-modify-rewrite
+> could silently destroy concurrently-captured entries. Catch it to retry or
+> skip: `catch (e) { if (e instanceof LockAcquisitionError) ... }`. The
+> `buffer clear` CLI reports a clean locked-buffer message; hook capture
+> (`appendToBuffer`) is unchanged — it was already fail-closed.
 
 ### Setup
 
@@ -681,9 +705,16 @@ message of the transcript:
 
 Tag matching is case-insensitive; the resulting name is lowercased.
 
-Untagged invocations are not name-detected — the report falls back to the
-project directory name. Workflow commands emit tags automatically; direct
-user invocations can include a tag manually.
+Name resolution precedence (v0.7.0): explicit `[agent:name]` tag → the
+harness-reported `agent_type` field on the hook payload (when the Claude Code
+version delivers it — the hook debug-logs payload key names, so presence is
+observable per capture) → nameless. Nameless entries display with the project
+directory name, then the agent id. Workflow commands emit tags automatically;
+direct user invocations can include a tag manually.
+
+Names supplied later at extract time (`extract --agent-name/--agent-names`)
+are written back onto the matching buffer entries (best-effort), so earlier
+nameless captures become name-complete for subsequent queries.
 
 See `docs/decisions/0001-explicit-tag-detection.md` for the rationale
 (hardcoded name enumeration was removed in v0.4.0).
@@ -728,12 +759,14 @@ Output ready for `save_run`:
 [
   {
     "name": "code-validator",
+    "agent_id": "a80e24f1c2d3e4f5a",
     "model": "claude-sonnet-4-5-20250929",
     "tokens": { "input_tokens": 63903, "output_tokens": 1510, "cache_creation_tokens": 63236, "cache_read_tokens": 315202, "total_effective_tokens": 65413 },
     "duration_ms": 113126
   },
   {
     "name": "test-architect",
+    "agent_id": "ab1c2d3e4f5a6b7c8",
     "model": "claude-sonnet-4-5-20250929",
     "tokens": { "input_tokens": 45200, "output_tokens": 980, "cache_creation_tokens": 44220, "cache_read_tokens": 210000, "total_effective_tokens": 46400 },
     "duration_ms": 87500

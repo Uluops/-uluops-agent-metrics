@@ -8,6 +8,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import type { AgentMetrics } from './types.js';
 import { logMetricsCapture, logBufferOperation } from './logger.js';
 import { acquireLock, releaseLock, withFileLock } from './lock.js';
@@ -120,6 +121,15 @@ function isValidBufferEntry(obj: unknown): obj is BufferEntry {
   // TypeError-crash them — and one bad entry takes down the whole save_run batch.
   const metrics = entry.metrics as Record<string, unknown>;
   if (!metrics.tokens || typeof metrics.tokens !== 'object') return false;
+
+  // The five core token fields must be NUMBERS, not merely present: a
+  // `tokens: {}` entry would pass an existence check but flow undefined
+  // token counts into tracker rows. This guard defends the data, not just
+  // the TypeError. (Optional cross-harness components stay optional.)
+  const tokens = metrics.tokens as Record<string, unknown>;
+  for (const field of ['input', 'output', 'cache_creation', 'cache_read', 'total_effective']) {
+    if (typeof tokens[field] !== 'number') return false;
+  }
 
   return true;
 }
@@ -400,7 +410,15 @@ function removeWhere(
       // crash-atomicity). rename(2) on the same filesystem is atomic, so a
       // crash leaves either the complete old file or the complete new one.
       // Same pattern as the log rotation in logger.ts.
-      const tmpPath = config.bufferPath + '.tmp';
+      // Unique temp name per writer: withFileLock is fail-closed, but the
+      // 30s stale-lock reclaim (lock.ts) can still hand two live writers
+      // the lock when a slow holder exceeds the staleness threshold
+      // mid-rewrite. A shared '.tmp' would let them interleave writes into
+      // the same file and rename a half-written temp over the buffer,
+      // truncating everything. Unique names confine the damage to
+      // last-rename-wins (stale snapshot), never a corrupt file. Do NOT
+      // simplify to a shared temp name while the stale-reclaim window exists.
+      const tmpPath = `${config.bufferPath}.${process.pid}.${randomUUID()}.tmp`;
       fs.writeFileSync(tmpPath, toJsonlContent(remaining), 'utf-8');
       fs.renameSync(tmpPath, config.bufferPath);
     }
@@ -438,8 +456,9 @@ export function annotateBufferEntries(
     }
 
     if (updated > 0) {
-      // Same atomic temp-file + rename pattern as removeWhere.
-      const tmpPath = config.bufferPath + '.tmp';
+      // Same atomic temp-file + rename pattern (and unique-temp-name
+      // rationale — stale-reclaim double-holder) as removeWhere.
+      const tmpPath = `${config.bufferPath}.${process.pid}.${randomUUID()}.tmp`;
       fs.writeFileSync(tmpPath, toJsonlContent(allEntries), 'utf-8');
       fs.renameSync(tmpPath, config.bufferPath);
     }

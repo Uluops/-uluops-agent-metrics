@@ -124,7 +124,7 @@ REPORT COLUMNS
 BUFFER & FILTERING
 ──────────────────────────────────────────────────────────────────────────────
 
-  Buffer stores metrics from all agents with 24h TTL.
+  Buffer stores metrics from all agents with a 30-day TTL (GC'd on append).
 
   Show buffer status:
     $ agent-metrics status

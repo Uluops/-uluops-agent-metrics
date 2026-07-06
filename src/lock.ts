@@ -7,6 +7,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 /**
  * Acquire a file lock for safe concurrent access.
@@ -28,7 +29,11 @@ import * as fs from 'node:fs';
  *    breaking the hook's synchronous contract
  *
  * The busy-wait is acceptable here because:
- * - Lock contention is rare (one hook per agent completion)
+ * - Contention is real but short-lived: parallel workflow validators fire many
+ *   SubagentStop hooks at once against a single buffer lock, but each holder only
+ *   holds it for one small appendFileSync. Callers (appendToBuffer) fail closed —
+ *   skipping the metric — if acquisition times out, so a stuck lock can never
+ *   force an unlocked, corruption-prone write.
  * - Exponential backoff caps at 100ms, limiting CPU spin time
  * - Total wait time is bounded by maxWaitMs (default 5s)
  * - The 30-second stale lock detection handles dead processes
@@ -41,6 +46,17 @@ import * as fs from 'node:fs';
  * @returns true if lock acquired, false if timeout
  */
 export function acquireLock(lockPath: string, maxWaitMs: number = 5000): boolean {
+  // Ensure the lock's parent directory exists. Without this, a missing parent
+  // makes writeFileSync throw ENOENT and statSync throw too, which reads as
+  // "lock file was removed, retry" — spinning the full maxWaitMs for what is
+  // actually an unwritable path. (Surfaced when withFileLock became
+  // fail-closed; the old fail-open path masked it.)
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  } catch {
+    // fall through — the create attempt below will report the real failure
+  }
+
   const startTime = Date.now();
   let delay = 10;
 
@@ -90,22 +106,43 @@ export function releaseLock(lockPath: string): void {
 }
 
 /**
+ * Thrown by withFileLock when the lock cannot be acquired within the timeout.
+ * Callers with best-effort semantics (GC, name write-back) catch and skip;
+ * user-facing callers surface it.
+ */
+export class LockAcquisitionError extends Error {
+  constructor(lockPath: string, timeoutMs: number) {
+    super(`Could not acquire lock ${lockPath} within ${timeoutMs}ms`);
+    this.name = 'LockAcquisitionError';
+  }
+}
+
+/**
  * Execute a function while holding a file lock.
  * Acquires the lock, runs the function, then releases.
+ *
+ * Fail-closed: if the lock cannot be acquired, fn is NOT run and
+ * LockAcquisitionError is thrown. Every caller performs a read-modify-rewrite
+ * of the whole buffer; running that unlocked against a concurrent writer can
+ * rename a stale snapshot over the buffer and silently destroy entries a
+ * writer was already told were captured. Skipping is always the safer failure
+ * (matches appendToBuffer's fail-closed append discipline).
  *
  * @param lockPath - Path to the lock file
  * @param timeoutMs - Lock acquisition timeout in milliseconds
  * @param fn - Function to execute while holding the lock
  * @returns The return value of fn
+ * @throws {LockAcquisitionError} If the lock is not acquired within timeoutMs
  */
 export function withFileLock<T>(lockPath: string, timeoutMs: number, fn: () => T): T {
   const lockAcquired = acquireLock(lockPath, timeoutMs);
+  if (!lockAcquired) {
+    throw new LockAcquisitionError(lockPath, timeoutMs);
+  }
 
   try {
     return fn();
   } finally {
-    if (lockAcquired) {
-      releaseLock(lockPath);
-    }
+    releaseLock(lockPath);
   }
 }

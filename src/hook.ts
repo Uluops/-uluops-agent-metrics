@@ -231,6 +231,18 @@ async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
     // Extract metrics
     const metrics = await extractMetricsFromFile(expandedPath);
 
+    // Enforce the join-key invariant at the persistence boundary: the id
+    // persisted as metrics.agent_id (the downstream provenance join key)
+    // must be the pattern-validated id gated above — not whatever string the
+    // transcript's first message happened to carry. The two derive from the
+    // same source today; this makes the guarantee hold by construction.
+    if (metrics.agent_id !== agentId) {
+      console.error(
+        `[agent-metrics] Transcript agent id "${metrics.agent_id}" != validated id "${agentId}"; persisting validated id`
+      );
+      metrics.agent_id = agentId;
+    }
+
     // Resolve agent name: explicit [agent:name] tag (workflow-emitted intent)
     // wins over the harness-reported agent_type, which wins over nameless.
     const agentName = (await detectAgentName(expandedPath)) || input.agent_type || null;

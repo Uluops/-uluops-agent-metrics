@@ -18,6 +18,7 @@ import {
   formatBufferList,
   formatBufferSession,
 } from '../display/formatters.js';
+import { LockAcquisitionError } from '../lock.js';
 import type { BufferFormat } from '../types.js';
 
 /**
@@ -172,22 +173,34 @@ export function registerBufferCommands(program: Command): void {
     .option('--agents <ids...>', 'Clear specific agent IDs')
     .option('--expired', 'Clear only expired entries (garbage collect)')
     .action((options: { session?: string; agents?: string[]; expired?: boolean }) => {
-      if (options.expired) {
-        const count = cleanupExpired();
-        console.log(`Cleared ${count} expired entries.`);
-        return;
-      }
+      // withFileLock is fail-closed: a stuck lock throws LockAcquisitionError
+      // rather than mutating unlocked. Surface it as a clean message, not a
+      // stack trace — nothing was cleared, the buffer is intact.
+      try {
+        if (options.expired) {
+          const count = cleanupExpired();
+          console.log(`Cleared ${count} expired entries.`);
+          return;
+        }
 
-      if (options.session) {
-        const count = clearSession(options.session);
-        console.log(`Cleared ${count} entries for session: ${options.session}`);
-        return;
-      }
+        if (options.session) {
+          const count = clearSession(options.session);
+          console.log(`Cleared ${count} entries for session: ${options.session}`);
+          return;
+        }
 
-      if (options.agents && options.agents.length > 0) {
-        const count = clearAgents(options.agents);
-        console.log(`Cleared ${count} entries for agents: ${options.agents.join(', ')}`);
-        return;
+        if (options.agents && options.agents.length > 0) {
+          const count = clearAgents(options.agents);
+          console.log(`Cleared ${count} entries for agents: ${options.agents.join(', ')}`);
+          return;
+        }
+      } catch (err) {
+        if (err instanceof LockAcquisitionError) {
+          console.error(`Buffer is locked by another process; nothing was cleared. (${err.message})`);
+          console.error('Retry once the concurrent capture/clear finishes.');
+          process.exit(1);
+        }
+        throw err;
       }
 
       console.error('Specify --session, --agents, or --expired');
