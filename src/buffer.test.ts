@@ -220,23 +220,6 @@ describe('Buffer Module', () => {
     });
   });
 
-  describe('entriesToTrackerFormat', () => {
-    it('F5: skips entries missing metrics.tokens instead of throwing (one bad entry must not crash the batch)', () => {
-      const good = {
-        agent_id: 'g', session_id: 's', captured_at: 't', end_time: 't', expires_at: 't',
-        metrics: createTestMetrics({ agent_id: 'g' }),
-      };
-      const bad = {
-        agent_id: 'b', session_id: 's', captured_at: 't', end_time: 't', expires_at: 't',
-        metrics: { model: 'x' },
-      } as unknown as BufferEntry;
-
-      const result = entriesToTrackerFormat([good, bad]);
-
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0].harness, 'claude-code');
-    });
-  });
 
   describe('readValidEntries', () => {
     it('should filter out expired entries', () => {
@@ -347,16 +330,20 @@ describe('Buffer Module', () => {
       assert.strictEqual(remaining.length, 1);
     });
 
-    it('should run opportunistically on append', () => {
+    it('should run opportunistically on append (via explicit cleanupExpired)', () => {
       appendToBuffer(createTestMetrics({ agent_id: 'gc-valid-1' }), { config: TEST_CONFIG });
       writeRawEntry(createTestMetrics({ agent_id: 'gc-expired' }), -1000);
 
-      // The next append should GC the expired entry
+      // F1: appendToBuffer now time-gates GC (60s interval, module-scoped).
+      // Within a test suite process the gate is typically closed by the time
+      // this test runs. Call cleanupExpired directly to exercise the GC logic
+      // without relying on the in-append trigger.
+      cleanupExpired(TEST_CONFIG);
       appendToBuffer(createTestMetrics({ agent_id: 'gc-valid-2' }), { config: TEST_CONFIG });
 
       const entries = readBuffer(TEST_CONFIG);
       assert.strictEqual(entries.length, 2);
-      assert.ok(!entries.some((e) => e.agent_id === 'gc-expired'), 'expired entry should be GC\'d by append');
+      assert.ok(!entries.some((e) => e.agent_id === 'gc-expired'), 'expired entry should be removed by cleanupExpired');
     });
   });
 
@@ -833,6 +820,22 @@ describe('Buffer Module', () => {
       const result = entriesToTrackerFormat([entry]);
       assert.strictEqual(result[0].agent_id, 'prov-agent-1');
       assert.strictEqual(result[0].name, 'code-validator');
+    });
+
+    it('F5: skips entries missing metrics.tokens instead of throwing (one bad entry must not crash the batch)', () => {
+      const good = {
+        agent_id: 'g', session_id: 's', captured_at: 't', end_time: 't', expires_at: 't',
+        metrics: createTestMetrics({ agent_id: 'g' }),
+      };
+      const bad = {
+        agent_id: 'b', session_id: 's', captured_at: 't', end_time: 't', expires_at: 't',
+        metrics: { model: 'x' },
+      } as unknown as BufferEntry;
+
+      const result = entriesToTrackerFormat([good, bad]);
+
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].harness, 'claude-code');
     });
 
     it('should handle empty array', () => {

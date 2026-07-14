@@ -19,8 +19,10 @@ import {
   extractExplicitAgentTag,
   getFirstUserMessageContent,
   parseHookInput,
+  readStdin,
   AGENT_ID_PATTERN,
 } from './hook.js';
+import { Readable } from 'node:stream';
 
 // Test configuration with isolated temp directory
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-hook-test-' + Date.now());
@@ -340,6 +342,33 @@ describe('Hook Module', () => {
       // Actual expansion depends on HOME env var
       const result = await getFirstUserMessageContent('~/non-existent-file.jsonl');
       assert.strictEqual(result, null);
+    });
+  });
+
+  describe('readStdin', () => {
+    it('returns full payload when two chunks arrive with a >100ms gap before end', async () => {
+      // Two chunks separated by a 150ms delay — the old fixed timer would have
+      // fired after 100ms, discarding the second chunk. The idle timer must
+      // reschedule on each chunk so resolution waits for 'end'.
+      const readable = new Readable({ read() {} });
+
+      const promise = readStdin(readable);
+
+      readable.push('{"part":');
+      await new Promise(r => setTimeout(r, 150));
+      readable.push('"one"}');
+      readable.push(null); // EOF
+
+      const result = await promise;
+      assert.strictEqual(result, '{"part":"one"}', 'Full payload must be returned despite the inter-chunk gap');
+    });
+
+    it('resolves to {} for empty stdin', async () => {
+      const readable = new Readable({ read() {} });
+      const promise = readStdin(readable);
+      readable.push(null); // EOF immediately
+      const result = await promise;
+      assert.strictEqual(result, '{}', 'Empty stdin must resolve to {}');
     });
   });
 });

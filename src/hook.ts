@@ -124,7 +124,7 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
   try {
     for await (const line of rl) {
       try {
-        const data = JSON.parse(line);
+        const data = JSON.parse(line) as { type?: unknown; message?: { content?: unknown } };
 
         // Return content of first user message (the task prompt)
         if (data.type === 'user' && data.message?.content) {
@@ -283,35 +283,46 @@ async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
 /**
  * Read hook input from stdin
  */
-async function readStdin(): Promise<string> {
+export async function readStdin(stream?: NodeJS.ReadableStream): Promise<string> {
+  const src = stream ?? process.stdin;
   return new Promise((resolve) => {
     let data = '';
     let resolved = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
     const done = (value: string): void => {
       if (resolved) return;
       resolved = true;
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
       resolve(value);
     };
 
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
+    const scheduleIdleTimeout = (): void => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      // Only fire idle timeout to resolve empty when no data has arrived yet.
+      // Once data is flowing, resolution comes from 'end' or MAX_STDIN_BYTES.
+      idleTimer = setTimeout(() => {
+        if (data === '') done('{}');
+      }, STDIN_READ_TIMEOUT_MS);
+    };
+
+    if (src === process.stdin) src.setEncoding('utf8');
+    src.on('data', (chunk) => {
+      data += chunk instanceof Buffer ? chunk.toString('utf8') : chunk;
+      scheduleIdleTimeout();
       if (Buffer.byteLength(data) > MAX_STDIN_BYTES) {
         done('{}');
       }
     });
-    process.stdin.on('end', () => {
+    src.on('end', () => {
       done(data || '{}');
     });
-    process.stdin.on('error', () => {
+    src.on('error', () => {
       done('{}');
     });
 
     // Handle case where stdin is empty or closed (e.g., piped empty input)
-    setTimeout(() => {
-      done(data || '{}');
-    }, STDIN_READ_TIMEOUT_MS);
+    scheduleIdleTimeout();
   });
 }
 

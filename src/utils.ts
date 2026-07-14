@@ -92,6 +92,15 @@ export function findAgentFile(
 
   // Normalize agent ID (remove 'agent-' prefix if present)
   const normalizedId = agentId.replace(/^agent-/, '');
+
+  // Validate before building a filesystem path — parity with the hook's
+  // isValidAgentId gate. Claude agent IDs are lowercase hex; reject anything
+  // else (path traversal, injection) by returning null. Codex UUIDv7 IDs use
+  // findCodexAgentFile (a separate path) and are unaffected.
+  if (!/^[a-f0-9]+$/.test(normalizedId)) {
+    return null;
+  }
+
   const filename = `agent-${normalizedId}.jsonl`;
 
   // If project path provided, search there first
