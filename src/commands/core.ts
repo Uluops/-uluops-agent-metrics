@@ -265,12 +265,18 @@ export function registerCoreCommands(program: Command): void {
         // 'auto' (default) detects the harness per agent ID, so a mixed
         // Claude+Codex comparison resolves each side correctly. An explicit
         // --provider forces all IDs to one harness (parity with extract/list/find).
-        const items: CompareItem[] = await Promise.all(
+        const settled = await Promise.allSettled(
           agentIds.map(async (agentId) => ({
             agentId,
             metrics: await extractAgentMetrics(agentId, { projectPath: options.project, provider: options.provider }),
           }))
         );
+        const items: CompareItem[] = settled.map((result, i) => {
+          if (result.status === 'fulfilled') return result.value;
+          const agentId = agentIds[i]!;
+          process.stderr.write(`Error reading agent ${agentId}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}\n`);
+          return { agentId, metrics: null };
+        });
 
         console.log(formatAgentCompare(items));
       } catch (error) {

@@ -298,6 +298,18 @@ describe('Utils Module', () => {
       // Both should behave the same (both null since xyz doesn't exist)
       assert.strictEqual(result1, result2);
     });
+
+    it('F6: should return null for traversal attempts and other invalid IDs', () => {
+      // Path traversal
+      assert.strictEqual(findAgentFile('../../../etc/passwd'), null, 'traversal should return null');
+      assert.strictEqual(findAgentFile('agent-../../../etc/passwd'), null, 'agent- traversal should return null');
+      // Uppercase hex (not a valid Claude agent ID)
+      assert.strictEqual(findAgentFile('ABC123'), null, 'uppercase ID should return null');
+      // Non-hex characters
+      assert.strictEqual(findAgentFile('xyz-invalid'), null, 'non-hex ID should return null');
+      // Empty string
+      assert.strictEqual(findAgentFile(''), null, 'empty ID should return null');
+    });
   });
 
   describe('findRecentAgentFiles', () => {

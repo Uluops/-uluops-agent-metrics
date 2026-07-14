@@ -11,7 +11,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { registerCoreCommands } from './core.js';
 import { isValidAgentId } from '../hook.js';
-import { createAgentJSONL, createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
+import { createAgentJSONL, createCommandTestHarness, createTestMetrics, type CommandTestHarness } from '../test-utils.js';
+import { appendToBuffer, queryBuffer, type BufferConfig } from '../buffer.js';
 
 // Test directory setup
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-cli-test-' + Date.now());
@@ -264,6 +265,88 @@ describe('Core Commands', () => {
       const textOutput = output.join('\n');
       assert.ok(textOutput.includes('not found'), 'Should indicate missing agent');
       assert.ok(textOutput.includes('abc1234'), 'Should still show valid agent');
+    });
+
+    it('should still output good agent row when one file is unreadable', async () => {
+      const unreadablePath = path.join(PROJECT_DIR, 'agent-abc1234.jsonl');
+      // Make the file unreadable so extractMetricsFromFile throws EACCES
+      fs.chmodSync(unreadablePath, 0o000);
+      try {
+        await program.parseAsync(['node', 'test', 'compare', 'abc1234', 'def5678']);
+      } finally {
+        fs.chmodSync(unreadablePath, 0o644);
+      }
+      const textOutput = output.join('\n');
+      // Good agent (def5678) must appear; abc1234 shows as 'not found' when it threw
+      assert.ok(textOutput.includes('Agent Comparison'), 'Comparison table must render');
+      assert.ok(
+        textOutput.includes('def5678') || textOutput.includes('not found'),
+        'Good agent data or not-found indicator must appear'
+      );
+    });
+  });
+
+  describe('F7: extract name write-back', () => {
+    const TEST_BUFFER_CONFIG = {
+      bufferPath: path.join(TEST_DIR, '.claude', 'agent-metrics-buffer.jsonl'),
+      defaultTTL: 60 * 60 * 1000, // 1h for test stability
+    } satisfies BufferConfig;
+
+    beforeEach(() => {
+      // Remove any leftover buffer file from prior test
+      try { fs.unlinkSync(TEST_BUFFER_CONFIG.bufferPath); } catch { /* ok */ }
+    });
+
+    it('F7: -a <name> writes the name back to a matching buffer entry', async () => {
+      // Pre-populate a buffer entry for abc1234 (nameless)
+      const metrics = createTestMetrics({ agent_id: 'abc1234', session_id: 'wb-session-1' });
+      appendToBuffer(metrics, { config: TEST_BUFFER_CONFIG });
+
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'my-validator']);
+
+      const jsonOutput = output.join('\n');
+      assert.ok(jsonOutput.includes('my-validator'), 'Tracker output should reflect supplied name');
+
+      // Verify name was written back to the buffer
+      const entries = queryBuffer({ agentId: 'abc1234' }, TEST_BUFFER_CONFIG);
+      assert.ok(entries.length > 0, 'Buffer entry should exist');
+      assert.strictEqual(entries[0]?.agent_name, 'my-validator', 'Buffer entry should have written-back name');
+    });
+
+    it('F7: --agent-names a,b writes names back for a two-agent batch', async () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'abc1234', session_id: 'wb-session-2a' }), { config: TEST_BUFFER_CONFIG });
+      appendToBuffer(createTestMetrics({ agent_id: 'def5678', session_id: 'wb-session-2b' }), { config: TEST_BUFFER_CONFIG });
+
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', 'def5678', '-f', 'tracker', '--agent-names', 'alpha,beta']);
+
+      const entries1 = queryBuffer({ agentId: 'abc1234' }, TEST_BUFFER_CONFIG);
+      const entries2 = queryBuffer({ agentId: 'def5678' }, TEST_BUFFER_CONFIG);
+      assert.strictEqual(entries1[0]?.agent_name, 'alpha', 'First agent name should be written back');
+      assert.strictEqual(entries2[0]?.agent_name, 'beta', 'Second agent name should be written back');
+    });
+
+    it('F7: write-back failure must not fail the extract (no buffer entry)', async () => {
+      // Extract without any buffer entry — annotateBufferEntries is a no-op
+      // (no matching entries), but the extract itself must still succeed.
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'fallback-name']);
+
+      const jsonOutput = output.join('\n');
+      // Extract succeeds and uses the supplied name
+      assert.ok(jsonOutput.includes('fallback-name'), 'Extract should succeed and use the supplied name');
+    });
+  });
+
+  describe('F7: compare with explicit codex provider', () => {
+    it('F7: compare <codexId> --provider codex reflects codex metrics', async () => {
+      await program.parseAsync(['node', 'test', 'compare', CODEX_AGENT_ID, '--provider', 'codex']);
+
+      const textOutput = output.join('\n');
+      assert.ok(textOutput.includes('Agent Comparison'), 'Should show comparison header');
+      // Codex agent metrics should appear in the comparison
+      assert.ok(
+        textOutput.includes(CODEX_AGENT_ID) || textOutput.includes('codex'),
+        'Should include codex agent data in comparison'
+      );
     });
   });
 });

@@ -149,6 +149,17 @@ function isExpired(entry: BufferEntry, now: Date): boolean {
   return new Date(entry.expires_at) <= now;
 }
 
+/**
+ * Minimum interval between opportunistic GC runs triggered by appendToBuffer.
+ * GC reads and rewrites the full buffer — running it on every append wastes I/O
+ * and creates lock contention when agents fire in bursts. With a 60s gate, GC
+ * runs at most once per minute (the buffer grows by at most a few KB between
+ * runs, and TTL is 30 days). Callers needing immediate GC invoke cleanupExpired
+ * directly.
+ */
+const GC_INTERVAL_MS = 60_000;
+/** Timestamp of the last successful opportunistic GC run (module-level, process-scoped). */
+let lastGcAt = 0;
 
 /**
  * Append a metrics entry to the buffer.
@@ -246,10 +257,17 @@ export function appendToBuffer(
   // Opportunistic GC. Must run after the append lock is released —
   // cleanupExpired takes the same (non-reentrant) file lock. Best-effort:
   // a GC failure must never fail the capture that triggered it.
-  try {
-    cleanupExpired(config);
-  } catch {
-    // ignore — next append retries
+  // Time-gated: skip if GC ran within GC_INTERVAL_MS to avoid full
+  // read+rewrite on every append during agent bursts. Callers needing
+  // immediate GC invoke cleanupExpired() directly.
+  const nowMs = Date.now();
+  if (nowMs - lastGcAt >= GC_INTERVAL_MS) {
+    try {
+      cleanupExpired(config);
+      lastGcAt = nowMs;
+    } catch {
+      // ignore — next append retries
+    }
   }
 
   return entry;
