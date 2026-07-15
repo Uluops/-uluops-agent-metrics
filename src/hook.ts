@@ -62,7 +62,12 @@ export function parseHookInput(parsed: unknown): Partial<HookInput> {
   if (typeof obj.transcript_path === 'string') result.transcript_path = obj.transcript_path;
   if (typeof obj.agent_transcript_path === 'string') result.agent_transcript_path = obj.agent_transcript_path;
   if (typeof obj.agent_id === 'string') result.agent_id = obj.agent_id;
-  if (typeof obj.agent_type === 'string') result.agent_type = obj.agent_type;
+  if (typeof obj.agent_type === 'string') {
+    // Strip control characters (including newlines that would split JSONL lines)
+    // and cap length before persisting to the buffer.
+    const cleaned = obj.agent_type.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 64);
+    if (cleaned.length > 0) result.agent_type = cleaned;
+  }
 
   return result;
 }
