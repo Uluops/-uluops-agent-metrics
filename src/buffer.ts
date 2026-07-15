@@ -249,9 +249,7 @@ export function appendToBuffer(
       buffer_path: config.bufferPath,
     });
   } finally {
-    if (lockAcquired) {
-      releaseLock(lockPath);
-    }
+    releaseLock(lockPath);
   }
 
   // Opportunistic GC. Must run after the append lock is released —

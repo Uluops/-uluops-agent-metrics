@@ -710,7 +710,10 @@ harness-reported `agent_type` field on the hook payload (when the Claude Code
 version delivers it — the hook debug-logs payload key names, so presence is
 observable per capture) → nameless. Nameless entries display with the project
 directory name, then the agent id. Workflow commands emit tags automatically;
-direct user invocations can include a tag manually.
+direct user invocations can include a tag manually. The `agent_type` fallback is
+sanitized before persistence (control characters stripped, capped at 64 chars,
+v0.7.1): a stray newline would otherwise split a JSONL buffer line and silently
+drop the entry on read.
 
 Names supplied later at extract time (`extract --agent-name/--agent-names`)
 are written back onto the matching buffer entries (best-effort), so earlier

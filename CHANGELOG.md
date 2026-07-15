@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-15
+
+### Fixed
+
+- **`agent_type` sanitized before persistence.** `parseHookInput` now strips
+  control characters and caps `agent_type` at 64 chars before it flows to
+  `agent_name` → the JSONL buffer → the tracker. An embedded newline would
+  otherwise split a buffer line and silently drop the entry on read
+  (`readBuffer` splits on `\n`) — closing the asymmetry with the already-gated
+  `agent_id` and transcript-path fields. Public type unchanged
+  (`agent_type: string | undefined`); a clean slug is untouched. +3 tests.
+- **Removed dead lock guard in `appendToBuffer`.** The `if (lockAcquired)`
+  wrapper in the `finally` block was provably always-true — the early
+  `if (!lockAcquired) return null` guarantees the lock is held there — so
+  `releaseLock` is now called unconditionally. No behavior change (release ran
+  exactly when it ran before); removes a misleading dead branch.
+
+### Provenance
+
+- Both fixes were produced and verified by the `issue-remediation` pipeline
+  (tracker `agent-metrics` run #16), resolving issues `a2756123` and `bd4b9914`.
+  `npm run build` + full suite (290 tests) green.
+
 ## [0.7.0] - 2026-07-06
 
 ### Added

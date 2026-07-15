@@ -53,6 +53,25 @@ describe('Hook Module', () => {
       assert.strictEqual(parseHookInput({ session_id: 's1', cwd: '/tmp', agent_type: 42 }).agent_type, undefined);
     });
 
+    it('should strip control characters from agent_type', () => {
+      // Newline would split a JSONL buffer line and cause silent metric loss
+      const result = parseHookInput({ session_id: 's1', cwd: '/tmp', agent_type: 'code\nvalidator' });
+      assert.strictEqual(result.agent_type, 'codevalidator');
+      assert.ok(!result.agent_type.includes('\n'), 'agent_type must not contain newline');
+    });
+
+    it('should cap agent_type at 64 characters', () => {
+      const long = 'a'.repeat(100);
+      const result = parseHookInput({ session_id: 's1', cwd: '/tmp', agent_type: long });
+      assert.ok(result.agent_type !== undefined);
+      assert.ok(result.agent_type!.length <= 64, `agent_type length should be ≤ 64, got ${result.agent_type!.length}`);
+    });
+
+    it('should omit agent_type when it consists entirely of control characters', () => {
+      const result = parseHookInput({ session_id: 's1', cwd: '/tmp', agent_type: '\n\r\t' });
+      assert.strictEqual(result.agent_type, undefined);
+    });
+
     it('should return empty object for non-object input', () => {
       assert.deepStrictEqual(parseHookInput(null), {});
       assert.deepStrictEqual(parseHookInput('nope'), {});
