@@ -25,7 +25,15 @@ export function getClaudeProjectsDir(): string {
  * @returns Absolute path to the Codex sessions directory
  */
 export function getCodexSessionsDir(): string {
-  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const defaultHome = path.join(os.homedir(), '.codex');
+  const envHome = process.env.CODEX_HOME?.trim();
+  // Normalize CODEX_HOME to an absolute, canonical path; fall back to the
+  // default if it is empty or contains a NUL byte. The recursive session walk
+  // is additionally depth-bounded and does not follow symlinked directories
+  // (walkCodexSessionFiles), so a redirected CODEX_HOME cannot cause unbounded
+  // or cyclic traversal.
+  const codexHome =
+    envHome && !envHome.includes('\0') ? path.resolve(envHome) : defaultHome;
   return path.join(codexHome, 'sessions');
 }
 
@@ -229,7 +237,21 @@ function isCodexRolloutFile(filename: string): boolean {
   return filename.startsWith('rollout-') && filename.endsWith('.jsonl');
 }
 
-async function walkCodexSessionFiles(dir: string, files: string[] = []): Promise<string[]> {
+/**
+ * Max directory recursion depth for the Codex session walk. Bounds stack usage
+ * on pathological trees. Symlinked directories are NOT followed — a Dirent from
+ * readdir reports isDirectory() === false for a symlink — so directory cycles
+ * cannot form; this cap is defense-in-depth against a very deep real tree.
+ */
+const CODEX_WALK_MAX_DEPTH = 12;
+
+async function walkCodexSessionFiles(
+  dir: string,
+  files: string[] = [],
+  depth = 0
+): Promise<string[]> {
+  if (depth > CODEX_WALK_MAX_DEPTH) return files;
+
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -239,8 +261,11 @@ async function walkCodexSessionFiles(dir: string, files: string[] = []): Promise
 
   await Promise.all(entries.map(async (entry) => {
     const entryPath = path.join(dir, entry.name);
+    // Only recurse into REAL directories. Dirent.isDirectory() is false for a
+    // symlink (readdir reports the link type, not its target), so a symlinked
+    // directory — and any cycle it could form — is skipped, not followed.
     if (entry.isDirectory()) {
-      await walkCodexSessionFiles(entryPath, files);
+      await walkCodexSessionFiles(entryPath, files, depth + 1);
       return;
     }
     if (entry.isFile() && isCodexRolloutFile(entry.name)) {

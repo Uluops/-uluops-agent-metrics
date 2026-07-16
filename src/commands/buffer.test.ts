@@ -14,7 +14,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { registerBufferCommands } from './buffer.js';
-import { createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
+import { appendToBuffer } from '../buffer.js';
+import { createCommandTestHarness, createTestMetrics, type CommandTestHarness } from '../test-utils.js';
 
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-buffer-commands-test-' + Date.now());
 
@@ -86,6 +87,37 @@ describe('Buffer Commands', () => {
 
       // Should execute without error
       assert.strictEqual(harness.exitCode, null, 'Should not exit with error for valid format');
+    });
+
+    it('should filter to a single run token with --run (exact match)', async () => {
+      // HOME is TEST_DIR (beforeEach), so the default buffer path is isolated.
+      appendToBuffer(createTestMetrics(), { runId: 'run-a' });
+      appendToBuffer(createTestMetrics(), { runId: 'run-b' });
+
+      await program.parseAsync(['node', 'test', 'buffer', 'list', '--run', 'run-a', '-f', 'json']);
+
+      const parsed = JSON.parse(output.join('\n'));
+      assert.ok(Array.isArray(parsed));
+      assert.strictEqual(parsed.length, 1, 'only the run-a entry should match');
+      assert.strictEqual(parsed[0].run_id, 'run-a');
+    });
+
+    it('should lowercase --run before matching (case-insensitive at the surface)', async () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-a' });
+
+      await program.parseAsync(['node', 'test', 'buffer', 'list', '--run', 'RUN-A', '-f', 'json']);
+
+      const parsed = JSON.parse(output.join('\n'));
+      assert.strictEqual(parsed.length, 1, 'uppercase --run must still match the lowercased stored token');
+    });
+
+    it('should return [] for an unknown --run token', async () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-a' });
+
+      await program.parseAsync(['node', 'test', 'buffer', 'list', '--run', 'no-such', '-f', 'tracker']);
+
+      const parsed = JSON.parse(output.join('\n'));
+      assert.deepStrictEqual(parsed, [], 'unknown token yields empty tracker output');
     });
 
     it('should reject invalid --since format', async () => {

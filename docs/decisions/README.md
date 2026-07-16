@@ -23,3 +23,4 @@ and updating the old one's status.
 - [0001 — Explicit-tag-only agent detection](0001-explicit-tag-detection.md)
 - [0002 — JSONL append-only buffer format](0002-jsonl-buffer-format.md)
 - [0003 — Atomic file-system lock for buffer writes](0003-atomic-sync-lock.md)
+- [0004 — Run-scoped token-metrics attribution](0004-run-scoped-attribution.md)

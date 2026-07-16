@@ -35,6 +35,15 @@ export interface BufferEntry {
   project_path?: string;
   /** Prompt ID — shared by all agents from the same user message (workflow grouping) */
   prompt_id?: string;
+  /**
+   * Run ID — orchestrator-minted token grouping all agents in one pipeline run.
+   * Absent on rows captured before v0.8.0 and on any agent whose prompt lacked
+   * a [run:token] tag (same absence semantics as agent_name). This is a
+   * buffer-QUERY key only (drives the --run filter); it is deliberately NOT
+   * forwarded into the -f tracker output / save_run agents[] payload, whose
+   * schema is strict (additionalProperties:false). See ADR-0004.
+   */
+  run_id?: string;
 }
 
 /**
@@ -169,6 +178,7 @@ let lastGcAt = 0;
  * @param options - Optional configuration for the buffer entry
  * @param options.agentName - Name of the agent that produced these metrics
  * @param options.projectPath - Project path where the agent ran
+ * @param options.runId - Orchestrator-minted run token (buffer-query key only)
  * @param options.ttlMs - Time-to-live in milliseconds (default: 30 days)
  * @param options.config - Buffer configuration override
  * @param options.source - Source of capture: 'hook', 'cli', or 'api'
@@ -180,6 +190,8 @@ export function appendToBuffer(
   options: {
     agentName?: string;
     projectPath?: string;
+    /** Orchestrator-minted run token; buffer-query key only (not tracker payload) */
+    runId?: string;
     ttlMs?: number;
     config?: BufferConfig;
     /** Source of the capture: 'hook', 'cli', or 'api' */
@@ -202,6 +214,7 @@ export function appendToBuffer(
     agent_name: options.agentName,
     project_path: options.projectPath,
     prompt_id: metrics.prompt_id ?? undefined,
+    run_id: options.runId,   // undefined when absent → omitted from JSON
   };
 
   // Acquire lock for safe concurrent access
@@ -325,6 +338,7 @@ export function readValidEntries(config: BufferConfig = defaultConfig()): Buffer
  * @param query.sessionId - Filter by session ID
  * @param query.agentId - Filter by agent ID
  * @param query.agentName - Filter by validator name
+ * @param query.runId - Filter to a single orchestrator run token (exact match)
  * @param query.projectPath - Filter by project path
  * @param query.since - Only include entries captured after this date
  * @param query.endTimeAfter - Only include entries where agent finished after this date
@@ -338,6 +352,7 @@ export function queryBuffer(
     sessionId?: string;
     agentId?: string;
     agentName?: string;
+    runId?: string;
     projectPath?: string;
     since?: Date;
     endTimeAfter?: Date;
@@ -354,6 +369,7 @@ export function queryBuffer(
     if (query.sessionId && entry.session_id !== query.sessionId) return false;
     if (query.agentId && entry.agent_id !== query.agentId) return false;
     if (query.agentName && entry.agent_name !== query.agentName) return false;
+    if (query.runId && entry.run_id !== query.runId) return false;
     if (query.projectPath && entry.project_path !== query.projectPath) return false;
     if (query.since && new Date(entry.captured_at) < query.since) return false;
     // Filter by agent end_time (when the agent actually finished)
@@ -605,6 +621,13 @@ export interface TrackerAgentFormat {
  *
  * This format is ready for use with save_run and includes
  * the full cache token breakdown.
+ *
+ * NOTE (ADR-0004): run_id is DELIBERATELY NOT mapped here. The save_run
+ * agents[] schema is strict (additionalProperties:false); an extra run_id key
+ * spliced verbatim into agents[] would be rejected at save time. run_id is a
+ * buffer-query key (drives --run selection); once the rows are selected they
+ * splice by agent_id exactly as before. Do NOT add run_id to TrackerAgentFormat
+ * or to this map — the -f json output already surfaces it for inspection.
  *
  * @param entries - Buffer entries to convert
  * @returns Array of tracker-compatible validator objects

@@ -7,7 +7,7 @@
  * - Agent ID extraction from file paths
  */
 
-import { describe, it, before, after, beforeEach } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -17,7 +17,11 @@ import {
   extractAgentIdFromPath,
   detectAgentName,
   extractExplicitAgentTag,
+  extractRunTag,
+  detectRunToken,
+  sanitizeLineSafe,
   getFirstUserMessageContent,
+  handleHook,
   parseHookInput,
   readStdin,
   AGENT_ID_PATTERN,
@@ -303,6 +307,101 @@ describe('Hook Module', () => {
     });
   });
 
+  describe('extractRunTag', () => {
+    it('should extract a run token from [run:token]', () => {
+      assert.strictEqual(
+        extractRunTag('[run:agent-metrics-ir-4625f30d-01] work'),
+        'agent-metrics-ir-4625f30d-01'
+      );
+    });
+
+    it('should co-exist with an [agent:] tag on the same line', () => {
+      assert.strictEqual(
+        extractRunTag('[agent:executor] [run:proj-ir-9zz1a2b3-02] go'),
+        'proj-ir-9zz1a2b3-02'
+      );
+    });
+
+    it('should permit a leading digit (wider grammar than agent names)', () => {
+      assert.strictEqual(extractRunTag('[run:0abc-de] x'), '0abc-de');
+    });
+
+    it('should return null when no run tag is present', () => {
+      assert.strictEqual(extractRunTag('no tag here'), null);
+      assert.strictEqual(extractRunTag(''), null);
+      assert.strictEqual(extractRunTag('[agent:executor] only'), null);
+    });
+
+    it('should reject malformed run tags', () => {
+      assert.strictEqual(extractRunTag('[run:]'), null);
+      assert.strictEqual(extractRunTag('[run: token]'), null);
+      assert.strictEqual(extractRunTag('[run:ab]'), null); // 2 chars: below the 3-char minimum
+      assert.strictEqual(extractRunTag('run:token'), null);
+    });
+
+    it('should accept the exact 3-char minimum-length token (inclusive boundary)', () => {
+      // Guards a {2,63} -> {3,63} regex mutation: the negative side ([run:ab] -> null)
+      // alone would not catch it; this asserts the inclusive minimum is valid.
+      assert.strictEqual(extractRunTag('[run:abc] x'), 'abc');
+      assert.strictEqual(extractRunTag('[run:0a1] x'), '0a1'); // leading-digit 3-char
+    });
+
+    it('should lowercase the result', () => {
+      assert.strictEqual(extractRunTag('[RUN:Proj-IR-3-A4F3] x'), 'proj-ir-3-a4f3');
+    });
+
+    it('should be line-safe: stop at the first ] and never capture ]/newline/control chars', () => {
+      // The token stops at the first ']' — the trailing 'token]' is not part of it.
+      assert.strictEqual(extractRunTag('[run:bad]token] rest'), 'bad');
+      const captures = [
+        extractRunTag('[run:agent-metrics-ir-4625f30d-01] work'),
+        extractRunTag('[run:bad]token]'),
+        extractRunTag('[RUN:Proj-IR-3-A4F3] x'),
+      ];
+      for (const cap of captures) {
+        if (cap === null) continue;
+        assert.ok(!cap.includes(']'), `captured value must not contain ]: ${cap}`);
+        assert.ok(!/[\n\r]/.test(cap), `captured value must not contain newline: ${cap}`);
+        assert.ok(!/[\x00-\x1f\x7f]/.test(cap), `captured value must not contain control char: ${cap}`);
+      }
+    });
+  });
+
+  describe('sanitizeLineSafe', () => {
+    it('should strip control characters and cap length at 64', () => {
+      assert.strictEqual(sanitizeLineSafe('abc\ndef'), 'abcdef');
+      assert.strictEqual(sanitizeLineSafe('a\x00b\x7fc'), 'abc');
+      assert.strictEqual(sanitizeLineSafe('x'.repeat(100)).length, 64);
+    });
+  });
+
+  describe('detectRunToken', () => {
+    function createTestTranscript(userMessage: string): string {
+      const filePath = path.join(TEST_DIR, `runtok-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+      const content = JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: userMessage },
+        timestamp: new Date().toISOString(),
+      });
+      fs.writeFileSync(filePath, content + '\n');
+      return filePath;
+    }
+
+    it('should detect a [run:token] tag in the first user message', async () => {
+      const filePath = createTestTranscript('[agent:executor] [run:proj-ir-4625f30d-01] go');
+      assert.strictEqual(await detectRunToken(filePath), 'proj-ir-4625f30d-01');
+    });
+
+    it('should return null when no run tag is present', async () => {
+      const filePath = createTestTranscript('[agent:executor] no run tag');
+      assert.strictEqual(await detectRunToken(filePath), null);
+    });
+
+    it('should return null for a non-existent file', async () => {
+      assert.strictEqual(await detectRunToken('/non/existent/file.jsonl'), null);
+    });
+  });
+
   describe('getFirstUserMessageContent', () => {
     it('should extract first user message content', async () => {
       const filePath = path.join(TEST_DIR, 'user-message.jsonl');
@@ -388,6 +487,101 @@ describe('Hook Module', () => {
       readable.push(null); // EOF immediately
       const result = await promise;
       assert.strictEqual(result, '{}', 'Empty stdin must resolve to {}');
+    });
+  });
+
+  describe('handleHook single-read of the first user message', () => {
+    // The transcript must live under ~/.claude/ to pass handleHook's path guard.
+    const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+    const HOOK_TEST_DIR = path.join(CLAUDE_DIR, `agent-metrics-hooktest-${Date.now()}`);
+    // A distinctive, collision-unlikely hex id so the afterEach cleanup targets
+    // ONLY this test's entry in the real (default-path) buffer.
+    const TEST_AGENT_ID = 'deadbeefcafe1234deadbeefcafe1234';
+
+    before(() => {
+      fs.mkdirSync(HOOK_TEST_DIR, { recursive: true });
+    });
+
+    after(() => {
+      fs.rmSync(HOOK_TEST_DIR, { recursive: true, force: true });
+    });
+
+    // handleHook writes one entry to the real default buffer; remove exactly it.
+    afterEach(async () => {
+      const { clearAgents } = await import('./buffer.js');
+      clearAgents([TEST_AGENT_ID]);
+    });
+
+    function writeValidTranscript(): string {
+      const filePath = path.join(HOOK_TEST_DIR, `agent-${TEST_AGENT_ID}.jsonl`);
+      const base = Date.now();
+      const common = {
+        cwd: '/test/project',
+        sessionId: 'sess-hooktest',
+        version: '2.1.0',
+        gitBranch: 'main',
+        agentId: TEST_AGENT_ID,
+      };
+      const lines = [
+        JSON.stringify({
+          ...common,
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text: 'kick off' }] },
+          uuid: 'u1',
+          timestamp: new Date(base).toISOString(),
+        }),
+        JSON.stringify({
+          ...common,
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'done' }],
+            model: 'claude-sonnet-4-5-20250929',
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+          uuid: 'u2',
+          timestamp: new Date(base + 1000).toISOString(),
+        }),
+      ];
+      fs.writeFileSync(filePath, lines.join('\n') + '\n');
+      return filePath;
+    }
+
+    it('reads the first user message EXACTLY once despite extracting both name and run token', async () => {
+      const filePath = writeValidTranscript();
+
+      let readCount = 0;
+      const countingReader = async (p: string): Promise<string | null> => {
+        readCount++;
+        // Return a first message carrying BOTH tags — the read that would have
+        // been duplicated if name and run-token were resolved via two separate
+        // detect*() calls instead of the single-read form.
+        return '[agent:executor] [run:proj-ir-4625f30d-01] go';
+      };
+
+      const output = await handleHook(
+        { agent_transcript_path: filePath, agent_id: TEST_AGENT_ID, cwd: '/test/project' },
+        { readFirstMessage: countingReader }
+      );
+
+      assert.strictEqual(output.decision, 'approve');
+      assert.strictEqual(readCount, 1, 'first user message must be read exactly once for both name + run token');
+
+      // Verify the OBSERVABLE result of the single read: both the agent name AND
+      // the run token extracted from that one message were actually persisted to
+      // the buffer. Guards the wiring mutation `runId: runId || undefined` ->
+      // `runId: undefined` in handleHook's appendToBuffer call, which the
+      // read-count assertion alone would not catch.
+      const { readBuffer } = await import('./buffer.js');
+      const mine = readBuffer().find((e) => e.agent_id === TEST_AGENT_ID);
+      assert.ok(mine, 'handleHook must have written a buffer entry for the agent');
+      assert.strictEqual(mine.run_id, 'proj-ir-4625f30d-01', 'run token from the single read must be persisted as run_id');
+      assert.strictEqual(mine.agent_name, 'executor', 'agent name from the single read must be persisted');
     });
   });
 });

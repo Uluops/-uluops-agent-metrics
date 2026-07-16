@@ -65,6 +65,7 @@ export function registerBufferCommands(program: Command): void {
     .description('List buffered metrics entries')
     .option('-s, --session <id>', 'Filter by session ID')
     .option('--agent-name <name>', 'Filter by agent name')
+    .option('--run <token>', 'Filter to a single orchestrator run token (exact match)')
     .option('-p, --project <path>', 'Filter by project path (partial match)')
     .option('--since <duration>', 'Filter entries captured in last duration (e.g., 30m, 1h, 2h)')
     .option('--end-after <iso-date>', 'Filter agents that finished after this time (ISO 8601)')
@@ -74,6 +75,7 @@ export function registerBufferCommands(program: Command): void {
     .action((options: {
       session?: string;
       agentName?: string;
+      run?: string;
       project?: string;
       since?: string;
       endAfter?: string;
@@ -115,6 +117,7 @@ export function registerBufferCommands(program: Command): void {
       let entries = queryBuffer({
         sessionId: options.session,
         agentName: options.agentName,
+        runId: options.run?.toLowerCase(),
         since: sinceDate,
         endTimeAfter,
         endTimeBefore,

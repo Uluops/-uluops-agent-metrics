@@ -843,4 +843,105 @@ describe('Buffer Module', () => {
       assert.deepStrictEqual(result, []);
     });
   });
+
+  describe('run_id — run-scoped attribution (v0.8.0)', () => {
+    it('round-trips run_id through appendToBuffer → readBuffer', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { runId: 'proj-ir-3-a4f3', config: TEST_CONFIG });
+
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].run_id, 'proj-ir-3-a4f3');
+    });
+
+    it('omits run_id when absent, and the entry is still valid', () => {
+      const metrics = createTestMetrics();
+      appendToBuffer(metrics, { config: TEST_CONFIG });
+
+      const raw = fs.readFileSync(TEST_CONFIG.bufferPath, 'utf-8').trim();
+      // undefined run_id must be omitted from the serialized JSON, not written as null
+      assert.ok(!raw.includes('run_id'), 'serialized entry must omit run_id when absent');
+
+      const entries = readValidEntries(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].run_id, undefined);
+    });
+
+    it('reads a hand-written legacy JSONL line lacking run_id (backward-compat)', () => {
+      const metrics = createTestMetrics();
+      const now = new Date();
+      const legacy: BufferEntry = {
+        agent_id: metrics.agent_id,
+        session_id: metrics.session_id,
+        captured_at: now.toISOString(),
+        end_time: metrics.end_time,
+        expires_at: new Date(now.getTime() + TEST_TTL_MS).toISOString(),
+        metrics,
+        // no run_id — a row captured before v0.8.0
+      };
+      fs.appendFileSync(TEST_CONFIG.bufferPath, JSON.stringify(legacy) + '\n');
+
+      const entries = readValidEntries(TEST_CONFIG);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].run_id, undefined);
+    });
+
+    it('queryBuffer({runId}) returns only entries with a matching run_id', () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-A', config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics(), { runId: 'run-B', config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics(), { config: TEST_CONFIG }); // untagged
+
+      const a = queryBuffer({ runId: 'run-A' }, TEST_CONFIG);
+      assert.strictEqual(a.length, 1);
+      assert.strictEqual(a[0].run_id, 'run-A');
+    });
+
+    it('queryBuffer for an unknown token returns [] and entriesToTrackerFormat([]) is []', () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-A', config: TEST_CONFIG });
+
+      const none = queryBuffer({ runId: 'no-such-token' }, TEST_CONFIG);
+      assert.deepStrictEqual(none, []);
+      assert.deepStrictEqual(entriesToTrackerFormat(none), []);
+    });
+
+    it('AND-composes runId with projectPath', () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-A', projectPath: '/proj/x', config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics(), { runId: 'run-A', projectPath: '/proj/y', config: TEST_CONFIG });
+
+      const composed = queryBuffer({ runId: 'run-A', projectPath: '/proj/x' }, TEST_CONFIG);
+      assert.strictEqual(composed.length, 1);
+      assert.strictEqual(composed[0].project_path, '/proj/x');
+    });
+
+    it('excludes legacy rows (no run_id) from a --run result', () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-A', config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics(), { config: TEST_CONFIG }); // untagged/legacy
+
+      const scoped = queryBuffer({ runId: 'run-A' }, TEST_CONFIG);
+      assert.strictEqual(scoped.length, 1);
+    });
+
+    it('regression guard (ADR-0004): entriesToTrackerFormat NEVER surfaces run_id', () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-A', config: TEST_CONFIG });
+      const withRun = queryBuffer({ runId: 'run-A' }, TEST_CONFIG);
+      assert.strictEqual(withRun.length, 1);
+
+      const tracker = entriesToTrackerFormat(withRun);
+      assert.strictEqual(tracker.length, 1);
+      assert.ok(!('run_id' in tracker[0]), 'tracker output must NOT contain run_id (strict save_run schema)');
+
+      // The tracker shape is identical whether or not the source carried a run_id.
+      appendToBuffer(createTestMetrics(), { config: TEST_CONFIG }); // untagged
+      const untagged = queryBuffer({}, TEST_CONFIG).filter((e) => e.run_id === undefined);
+      const trackerUntagged = entriesToTrackerFormat(untagged.slice(0, 1));
+      assert.deepStrictEqual(
+        Object.keys(tracker[0]).sort(),
+        Object.keys(trackerUntagged[0]).sort(),
+        'tracker key-set must be identical with and without run_id on the source entry'
+      );
+
+      // run_id IS present in the raw entry (surfaced by -f json, which serializes BufferEntry).
+      assert.strictEqual(withRun[0].run_id, 'run-A');
+    });
+  });
 });

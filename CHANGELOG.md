@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-15
+
+### Added
+
+- **Run-scoped token attribution** (see `docs/decisions/0004-run-scoped-attribution.md`).
+  An orchestrator-minted **run token** rides the existing first-user-message tag
+  channel as `[run:<token>]` (alongside `[agent:<name>]`), letting a pipeline
+  collect *exactly* its own agents' token metrics instead of everything in a
+  rolling `--since` window. Motivated by an issue-remediation run where the
+  60-minute buffer window pulled in agents from other concurrent sessions, so
+  the metrics were omitted rather than mis-attributed.
+  - **`[run:token]` tag + `RUN_TAG_PATTERN` / `extractRunTag` / `detectRunToken`**
+    in the SubagentStop hook. Grammar `/\[run:([a-z0-9][a-z0-9-]{2,63})\]/i` —
+    its own namespace (a leading digit is permitted, unlike agent names), 3–64
+    chars, line-safe by construction (excludes `]` and control chars). The hook
+    reads the first user message **once** and extracts both the agent name and
+    the run token from it (no second transcript read).
+  - **`BufferEntry.run_id`** — a new optional field persisting the token.
+    Backward-compatible: absent on pre-0.8.0 rows and on any untagged agent;
+    unvalidated, so old rows stay valid.
+  - **`queryBuffer({ runId })` + `appendToBuffer({ runId })`** — an exact-match
+    run-token predicate.
+  - **`buffer list --run <token>`** — CLI flag for the exact run-scoped query.
+    Composes with `-p`/`--since` as an AND of predicates; case-insensitive at
+    the surface.
+- **`sanitizeLineSafe`** — the single line-safety helper (strip control chars +
+  64-char cap) now shared by `agent_type` and the run token.
+
+### Notes
+
+- **`run_id` is a buffer-query key, not a tracker payload field.** It is
+  deliberately *not* emitted in `-f tracker` output: the tracker `save_run`
+  `agents[]` schema is strict (`additionalProperties: false`), so an extra key
+  would be rejected. It selects which rows splice into `agents[]`; the rows
+  themselves join by `agent_id` as before. `run_id` *is* visible in `-f json`.
+- No change to the `-f tracker` output shape — existing consumers are unaffected.
+
 ## [0.7.1] - 2026-07-15
 
 ### Fixed

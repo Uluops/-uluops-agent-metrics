@@ -49,6 +49,17 @@ interface HookInput {
 }
 
 /**
+ * Strip control characters (including newlines that would split JSONL lines)
+ * and cap length at 64 before a value is persisted to the buffer. This is the
+ * single line-safety path shared by agent_type (parseHookInput) and the run
+ * token (handleHook) — belt-and-suspenders for the run token, whose regex
+ * character class already excludes ']' and control chars.
+ */
+export function sanitizeLineSafe(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 64);
+}
+
+/**
  * Parse and validate hook input from stdin.
  * Returns a Partial<HookInput> — callers must handle missing fields.
  */
@@ -65,7 +76,7 @@ export function parseHookInput(parsed: unknown): Partial<HookInput> {
   if (typeof obj.agent_type === 'string') {
     // Strip control characters (including newlines that would split JSONL lines)
     // and cap length before persisting to the buffer.
-    const cleaned = obj.agent_type.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 64);
+    const cleaned = sanitizeLineSafe(obj.agent_type);
     if (cleaned.length > 0) result.agent_type = cleaned;
   }
 
@@ -173,6 +184,54 @@ export function extractExplicitAgentTag(content: string): string | null {
 }
 
 /**
+ * Pattern for explicit run tag: [run:token]
+ *
+ * Minted by an orchestrator (e.g. the pdl-executor skill) and emitted in the
+ * first user message of every agent prompt in a run, alongside [agent:name].
+ * Its own namespace/grammar: identifiers, not names — a leading digit is
+ * permitted (a wider grammar than EXPLICIT_AGENT_TAG_PATTERN, since a token
+ * segment may begin with a hex/numeric char, e.g. a session-id prefix). Total
+ * length 3–64 (leading char + {2,63}). Line-safe by construction: the character
+ * class excludes ']' (which would close the tag early) and control chars (which
+ * would split JSONL lines), so the regex cannot capture either — but the
+ * extracted value is still passed through the same \x00-\x1f\x7f strip + 64-slice
+ * as agent_type before persistence, keeping one line-safety code path.
+ *
+ * See docs/decisions/0004-run-scoped-attribution.md for the rationale.
+ */
+export const RUN_TAG_PATTERN = /\[run:([a-z0-9][a-z0-9-]{2,63})\]/i;
+
+/**
+ * Extract the run token from an explicit `[run:token]` tag in content.
+ *
+ * @param content - The text content to search
+ * @returns The extracted run token (lowercased), or null if no tag found
+ */
+export function extractRunTag(content: string): string | null {
+  const match = content.match(RUN_TAG_PATTERN);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * Detect the run token from the first user message in a transcript.
+ *
+ * Convenience helper mirroring detectAgentName for symmetry/testing. The hot
+ * path in handleHook uses the single-read form (getFirstUserMessageContent
+ * called once, then both extractors applied) so the transcript is read exactly
+ * once; this helper is for callers that only want the run token.
+ *
+ * @param transcriptPath - Path to the agent transcript file (may start with ~)
+ * @returns The tagged run token, or null if no tag is present
+ */
+export async function detectRunToken(transcriptPath: string): Promise<string | null> {
+  const content = await getFirstUserMessageContent(transcriptPath);
+  if (!content) {
+    return null;
+  }
+  return extractRunTag(content);
+}
+
+/**
  * Detect agent name from the first user message in transcript.
  *
  * Detection is explicit-tag-only: the first user message must contain
@@ -193,9 +252,19 @@ export async function detectAgentName(transcriptPath: string): Promise<string | 
 }
 
 /**
- * Main hook handler
+ * Main hook handler.
+ *
+ * @param input - Parsed hook input.
+ * @param deps.readFirstMessage - Injectable transcript reader (defaults to
+ *   getFirstUserMessageContent). Exists so tests can assert the first user
+ *   message is read EXACTLY ONCE even though both the agent name and the run
+ *   token are extracted from it (the single-read invariant, spec §2.2).
  */
-async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
+export async function handleHook(
+  input: Partial<HookInput>,
+  deps: { readFirstMessage?: typeof getFirstUserMessageContent } = {}
+): Promise<HookOutput> {
+  const readFirstMessage = deps.readFirstMessage ?? getFirstUserMessageContent;
   try {
     // Use agent_transcript_path (new field) or fall back to transcript_path
     const transcriptPath = input.agent_transcript_path || input.transcript_path;
@@ -207,11 +276,23 @@ async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
 
     const expandedPath = transcriptPath.replace(/^~/, os.homedir());
 
-    // Validate path is under ~/.claude/ to prevent reading arbitrary files
-    const claudeDir = path.join(os.homedir(), '.claude');
-    const resolvedPath = path.resolve(expandedPath);
-    if (!resolvedPath.startsWith(claudeDir + path.sep)) {
-      console.error(`[agent-metrics] Transcript path outside ~/.claude/: ${resolvedPath}`);
+    // Validate path is under ~/.claude/ to prevent reading arbitrary files.
+    // Resolve symlinks with realpath (not just path.resolve, which only
+    // normalizes '..' as a string and does NOT follow links) so a symlink
+    // planted inside ~/.claude cannot escape containment (CWE-61). Both sides
+    // are realpath-resolved in case ~/.claude itself is a symlink. realpathSync
+    // throws if the path does not exist / is unreadable — treat that as
+    // "nothing to capture" and approve, same as the existsSync check below.
+    let realPath: string;
+    let realClaudeDir: string;
+    try {
+      realClaudeDir = fs.realpathSync(path.join(os.homedir(), '.claude'));
+      realPath = fs.realpathSync(expandedPath);
+    } catch {
+      return { decision: 'approve' };
+    }
+    if (realPath !== realClaudeDir && !realPath.startsWith(realClaudeDir + path.sep)) {
+      console.error(`[agent-metrics] Transcript path outside ~/.claude/: ${realPath}`);
       return { decision: 'approve' };
     }
 
@@ -228,13 +309,13 @@ async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
       return { decision: 'approve' };
     }
 
-    // Check if file exists
-    if (!fs.existsSync(expandedPath)) {
-      return { decision: 'approve' };
-    }
-
-    // Extract metrics
-    const metrics = await extractMetricsFromFile(expandedPath);
+    // Read from the realpath-resolved path (not expandedPath) for the metrics
+    // extraction and the first-message read below. realPath was verified to be
+    // inside ~/.claude above; reusing it collapses the check and the use onto
+    // one resolved path, closing the TOCTOU window a post-check symlink swap
+    // would otherwise open (CWE-367). realpathSync also already confirmed the
+    // path exists, so the prior existsSync check is redundant and removed.
+    const metrics = await extractMetricsFromFile(realPath);
 
     // Enforce the join-key invariant at the persistence boundary: the id
     // persisted as metrics.agent_id (the downstream provenance join key)
@@ -248,14 +329,28 @@ async function handleHook(input: Partial<HookInput>): Promise<HookOutput> {
       metrics.agent_id = agentId;
     }
 
+    // Read the first user message ONCE, then extract both the agent name and
+    // the run token from it. Both signals ride the same channel (the first
+    // user message), so a single read serves both — no second transcript read.
+    // Uses the verified realPath (see TOCTOU note above), not expandedPath.
+    const firstMsg = await readFirstMessage(realPath);
+
     // Resolve agent name: explicit [agent:name] tag (workflow-emitted intent)
     // wins over the harness-reported agent_type, which wins over nameless.
-    const agentName = (await detectAgentName(expandedPath)) || input.agent_type || null;
+    const agentName =
+      (firstMsg && extractExplicitAgentTag(firstMsg)) || input.agent_type || null;
+
+    // Resolve run token: explicit [run:token] tag minted by the orchestrator.
+    // Absent when the prompt carried no [run:] tag (same absence semantics as
+    // a missing [agent:name]). Passed through the shared line-safety path.
+    const rawRunId = firstMsg ? extractRunTag(firstMsg) : null;
+    const runId = rawRunId ? sanitizeLineSafe(rawRunId) : null;
 
     // Write to buffer
     appendToBuffer(metrics, {
       agentName: agentName || undefined,
       projectPath: input.cwd,
+      runId: runId || undefined,
       source: 'hook',
     });
 

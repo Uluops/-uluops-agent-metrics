@@ -353,8 +353,17 @@ import {
 const entries = queryBuffer({
   sessionId: 'ea588859-88cd-4511-851a-4fe928cd77c7',
   agentName: 'code-validator',
+  runId: 'my-project-ship-31948701-01', // exact run token — only agents tagged [run:...] with it (v0.8.0)
   since: new Date(Date.now() - 3600000), // Last hour
   includeExpired: false,
+});
+
+// Append with a run token so a later queryBuffer({ runId }) / `buffer list --run`
+// collects exactly this run's agents (v0.8.0). run_id is a query key only —
+// it is NOT emitted into -f tracker output (the tracker schema is strict).
+appendToBuffer(metrics, {
+  agentName: 'code-validator',
+  runId: 'my-project-ship-31948701-01',
 });
 
 // Get all entries for a session (useful for workflows)
@@ -578,7 +587,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | Command | Description |
 |---------|-------------|
 | `buffer status` | Show buffer statistics |
-| `buffer list [-s session] [--agent-name name] [--since duration] [--end-after iso] [--end-before iso] [-p project] [-a] [-f format]` | List buffered entries |
+| `buffer list [-s session] [--agent-name name] [--run token] [--since duration] [--end-after iso] [--end-before iso] [-p project] [-a] [-f format]` | List buffered entries. `--run <token>` filters to a single orchestrator run token (exact match, v0.8.0) |
 | `buffer session <id> [-f format]` | Get all entries for a session |
 | `buffer clear --session <id>` | Clear entries for a session |
 | `buffer clear --agents <id...>` | Clear specific agent IDs |
@@ -722,6 +731,36 @@ nameless captures become name-complete for subsequent queries.
 See `docs/decisions/0001-explicit-tag-detection.md` for the rationale
 (hardcoded name enumeration was removed in v0.4.0).
 
+### Run-Scoped Attribution (v0.8.0)
+
+To attribute token metrics to a *specific pipeline run* — not every agent in a
+rolling time window — an orchestrator mints a **run token** and emits it as a
+second tag `[run:<token>]` in the first user message, alongside `[agent:name]`:
+
+```text
+[agent:code-validator] [run:my-project-ship-31948701-01] Validate this directory
+```
+
+The hook persists the token as `run_id` on the buffer entry, and
+`buffer list --run <token>` returns exactly the agents tagged with it. The
+vocabulary spans three layers, all referring to the same token:
+
+| Layer | Form | Where |
+|-------|------|-------|
+| Prompt tag | `[run:<token>]` | first user message (what the orchestrator emits) |
+| Buffer field | `run_id` | `BufferEntry` / `-f json` output |
+| Query | `--run <token>` (CLI) / `queryBuffer({ runId })` (API) | selection |
+
+**Token grammar:** `[a-z0-9][a-z0-9-]{2,63}` (lowercase, 3–64 chars, leading
+digit permitted). A convenient scheme is
+`<project>-<workflow>-<session8>-<nonce>`, where `<session8>` is the first 8 hex
+chars of the Claude Code session id — e.g. `my-project-ship-31948701-01`.
+
+`run_id` is a **query key only** — it is deliberately *not* emitted in
+`-f tracker` output (the tracker `save_run agents[]` schema is strict), but it
+*is* visible in `-f json`. See `docs/decisions/0004-run-scoped-attribution.md`
+for the full rationale.
+
 ### Buffer Commands
 
 ```bash
@@ -733,6 +772,9 @@ agent-metrics buffer list
 
 # Filter by agent name
 agent-metrics buffer list --agent-name code-validator
+
+# Filter to exactly one pipeline run by its run token (v0.8.0)
+agent-metrics buffer list --run my-project-ship-31948701-01 -f tracker
 
 # Get all entries for a session (useful for workflows)
 agent-metrics buffer session <session-id>
@@ -755,6 +797,18 @@ SESSION_ID="ea588859-88cd-4511-851a-4fe928cd77c7"
 # Get all agents' metrics in tracker format
 agent-metrics buffer session $SESSION_ID --format tracker
 ```
+
+For **run-scoped** collection (only the agents of one pipeline run, even when
+other agents ran concurrently in the same session), tag every agent prompt with
+`[run:<token>]` and collect by that token instead of a time window:
+
+```bash
+# Exactly this run's agents — no cross-session pollution
+agent-metrics buffer list --run my-project-ship-31948701-01 -f tracker -p "$TARGET"
+```
+
+This replaces the older `--since <duration>m` window, which could pull in agents
+from unrelated concurrent runs.
 
 Output ready for `save_run`:
 
