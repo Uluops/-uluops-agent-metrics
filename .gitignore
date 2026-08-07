@@ -1,4 +1,8 @@
+# Both forms: `node_modules/` alone does NOT match a SYMLINK named node_modules,
+# which is how one got committed on 2026-08-06 (a worktree pointed its node_modules
+# at the parent checkout, and `git add -A` picked up the link).
 node_modules/
+node_modules
 dist/
 docs/*
 !docs/decisions/
