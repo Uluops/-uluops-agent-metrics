@@ -161,6 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Codex `session_meta` was never read on real rollouts.** `readCodexSessionMeta`
+  (internal) read a fixed 8192 bytes and parsed the first line from that, but
+  a real `session_meta` line is ~20KB (it embeds the instructions text), so
+  `JSON.parse` failed on every rollout, `agent-metrics list` never showed a
+  Codex subagent, and the `session_meta.payload.id` fallback in
+  `findCodexAgentFile` never matched. The reader now follows the first line to
+  its newline in 64KB chunks, capped at 1 MiB (a longer line is reported as a
+  scan skip naming the file). Surfaced live on 2026-09-03 by the new scan-skip
+  diagnostic, which reported all 43 rollouts on the dev machine as unreadable.
 - **`prepublishOnly` ordering let test artifacts persist into the packed
   tarball.** It ran `npm run build && npm test`; `npm test`'s
   `tsconfig.test.json` compile (same `outDir: dist`, tests included) ran

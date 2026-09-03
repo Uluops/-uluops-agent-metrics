@@ -356,6 +356,15 @@ async function walkCodexSessionFiles(dir: string, scan: ScanObservation): Promis
 }
 
 /**
+ * Bounds for reading a rollout file's first line (the session_meta record).
+ * Real session_meta lines run ~20KB (they embed the full instructions text),
+ * so the read must follow the line to its newline rather than assume a fixed
+ * size; the cap keeps a pathological file from being slurped whole.
+ */
+const CODEX_META_READ_CHUNK_BYTES = 64 * 1024;
+const CODEX_META_MAX_LINE_BYTES = 1024 * 1024;
+
+/**
  * Read and parse the leading `session_meta` record of a Codex rollout file.
  *
  * @param filePath - Path to the rollout file
@@ -376,15 +385,34 @@ function readCodexSessionMeta(filePath: string, scan?: ScanObservation): Record<
     return null;
   }
   try {
-    let bytesRead: number;
-    const buffer = Buffer.alloc(8192);
+    // Read the FIRST LINE, however long, up to CODEX_META_MAX_LINE_BYTES.
+    // This used to be a single fixed 8192-byte read, and on the dev machine
+    // (2026-09-03) every real rollout's session_meta line was ~20KB — so
+    // JSON.parse always failed on a truncated line, no session_meta was ever
+    // read, `list` never showed a Codex subagent, and the id fallback never
+    // worked. The failure was silent until the scan-skip diagnostics landed.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let newlineFound = false;
     try {
-      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      while (total < CODEX_META_MAX_LINE_BYTES && !newlineFound) {
+        const chunk = Buffer.alloc(Math.min(CODEX_META_READ_CHUNK_BYTES, CODEX_META_MAX_LINE_BYTES - total));
+        const n = fs.readSync(fd, chunk, 0, chunk.length, total);
+        if (n === 0) break;
+        const slice = chunk.subarray(0, n);
+        chunks.push(slice);
+        total += n;
+        if (slice.indexOf(0x0a) !== -1) newlineFound = true;
+      }
     } catch (err) {
       if (scan) recordScanSkip(scan, filePath, err);
       return null;
     }
-    const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0];
+    if (!newlineFound && total >= CODEX_META_MAX_LINE_BYTES) {
+      if (scan) recordScanSkip(scan, filePath, new Error(`first line exceeds ${CODEX_META_MAX_LINE_BYTES} bytes`));
+      return null;
+    }
+    const firstLine = Buffer.concat(chunks).toString('utf8').split(/\r?\n/, 1)[0];
     if (!firstLine) return null;
     let parsed: unknown;
     try {

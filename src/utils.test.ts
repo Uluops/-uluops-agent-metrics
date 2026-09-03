@@ -390,6 +390,34 @@ describe('Utils Module', () => {
       process.stderr.write = originalStderrWrite;
     });
 
+    it('reads a session_meta first line longer than 8KB (live finding 2026-09-03: every real rollout on the dev machine exceeded the old fixed 8192-byte read)', async () => {
+      const { sessionsDir } = freshCodexHome('long-meta');
+      // ~20KB first line: the filename carries no id suffix, so only the
+      // session_meta.payload.id fallback can find it.
+      const line = sessionMetaLine({ id: 'long-meta-id-0001', padding: 'x'.repeat(20000) });
+      assert.ok(Buffer.byteLength(line) > 8192, 'fixture must exceed the old 8KB read');
+      fs.writeFileSync(path.join(sessionsDir, 'rollout-2026-06-08T16-14-05-long.jsonl'), line + '\n');
+
+      const byId = await findCodexAgentFile('long-meta-id-0001');
+      assert.ok(byId, 'id fallback must find a rollout whose session_meta line exceeds 8KB');
+      assert.strictEqual(byId.projectDir, '/test/project');
+      const recent = await findRecentCodexAgentFiles(5);
+      assert.strictEqual(recent.length, 1, 'thread_source=subagent must be read from a >8KB session_meta');
+      assert.strictEqual(captured, '', `a readable long first line must not be reported as a skip, got:\n${captured}`);
+    });
+
+    it('control: a first line beyond the 1 MiB cap is recorded as a skip naming the file, not parsed', async () => {
+      const { sessionsDir } = freshCodexHome('over-cap');
+      const line = sessionMetaLine({ id: 'over-cap-id', padding: 'x'.repeat(1024 * 1024 + 100) });
+      const filePath = path.join(sessionsDir, 'rollout-2026-06-08T16-14-05-overcap.jsonl');
+      fs.writeFileSync(filePath, line + '\n');
+
+      const byId = await findCodexAgentFile('over-cap-id');
+      assert.strictEqual(byId, null);
+      assert.ok(captured.includes(filePath), `skip must name the file, got:\n${captured}`);
+      assert.ok(/exceeds/.test(captured), `skip must name the cap, got:\n${captured}`);
+    });
+
     it('T1: scanning more than CODEX_SCAN_NOTICE_THRESHOLD files emits exactly one size notice naming the count', async () => {
       const { sessionsDir } = freshCodexHome('over-threshold');
       const fileCount = 1001; // THRESHOLD (1000) + 1
