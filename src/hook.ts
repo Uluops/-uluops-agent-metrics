@@ -27,7 +27,7 @@ import * as readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { extractMetricsFromFile } from './extractor.js';
 import { appendToBuffer } from './buffer.js';
-import { debug } from './logger.js';
+import { debug, warn } from './logger.js';
 import { formatModelName } from './utils.js';
 
 interface HookInput {
@@ -65,7 +65,7 @@ export function sanitizeLineSafe(value: string): string {
  */
 export function parseHookInput(parsed: unknown): Partial<HookInput> {
   if (!parsed || typeof parsed !== 'object') return {};
-  const obj = parsed as Record<string, unknown>;
+  const obj = parsed as Record<string, unknown>; // safe: guarded by typeof check above
   const result: Partial<HookInput> = {};
 
   if (typeof obj.session_id === 'string') result.session_id = obj.session_id;
@@ -93,6 +93,13 @@ interface HookOutput {
  * Configuration constants
  */
 const STDIN_READ_TIMEOUT_MS = 100; // Timeout for reading stdin when no data received
+// Absolute ceiling on total read time, independent of the idle timer above.
+// The idle timer only resolves the never-received-anything case (it keeps
+// rescheduling as long as data keeps arriving); a peer that sends a partial
+// chunk and then stalls mid-stream — without ever hitting 'end', 'error', or
+// another 'data' event — would otherwise hang readStdin (and the hook)
+// indefinitely. This timer fires regardless of activity.
+const STDIN_HARD_DEADLINE_MS = 5000;
 const MAX_STDIN_BYTES = 1 * 1024 * 1024; // 1MB max stdin to prevent memory exhaustion
 
 /** Valid agent ID pattern: lowercase hex string */
@@ -137,23 +144,54 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
     crlfDelay: Infinity,
   });
 
+  let malformedLineCount = 0;
+
+  // Reports the malformed-line count exactly once, on whichever exit path is
+  // taken. Extracted because the loop below can exit via an early `return`
+  // (a valid user message was found) as well as by running out of lines —
+  // a check placed only after the loop would silently never fire on the
+  // early-return path, undercounting the common case (malformed lines
+  // followed by the actual user message).
+  const reportMalformedIfAny = (): void => {
+    if (malformedLineCount > 0) {
+      warn('Skipped malformed transcript lines while looking for the first user message', {
+        transcript_path: expandedPath,
+        skipped_line_count: malformedLineCount,
+      });
+    }
+  };
+
   try {
     for await (const line of rl) {
       try {
-        const data = JSON.parse(line) as { type?: unknown; message?: { content?: unknown } };
+        const parsed: unknown = JSON.parse(line);
+        if (!parsed || typeof parsed !== 'object') continue;
+        const data = parsed as { type?: unknown; message?: { content?: unknown } }; // safe: guarded by typeof check above
 
         // Return content of first user message (the task prompt)
         if (data.type === 'user' && data.message?.content) {
+          reportMalformedIfAny();
           return typeof data.message.content === 'string'
             ? data.message.content
             : JSON.stringify(data.message.content);
         }
       } catch {
         // Expected: transcript lines may be truncated or malformed; skip and continue
+        malformedLineCount++;
       }
     }
-  } catch {
-    // Expected: file may be locked or unreadable during agent execution; return null
+    reportMalformedIfAny();
+  } catch (err) {
+    // This read runs at SubagentStop, i.e. after the agent has already
+    // stopped — it is not racing a lock held during agent execution.
+    // Realistic causes are a disappeared/rotated file, EACCES, EMFILE, or a
+    // transcript truncated mid-stream. Without this log, a genuine read
+    // failure is indistinguishable from "no [agent:] tag in this
+    // transcript" — both would otherwise return null silently.
+    warn('Failed to read transcript while looking for the first user message', {
+      transcript_path: expandedPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
   } finally {
     rl.close();
     fileStream.destroy();
@@ -259,12 +297,19 @@ export async function detectAgentName(transcriptPath: string): Promise<string | 
  *   getFirstUserMessageContent). Exists so tests can assert the first user
  *   message is read EXACTLY ONCE even though both the agent name and the run
  *   token are extracted from it (the single-read invariant, spec §2.2).
+ * @param deps.appendToBuffer - Injectable buffer writer (defaults to
+ *   appendToBuffer). Exists so tests can force the lock-contention/null-return
+ *   path (issue c3234628) without racing a real lock file.
  */
 export async function handleHook(
   input: Partial<HookInput>,
-  deps: { readFirstMessage?: typeof getFirstUserMessageContent } = {}
+  deps: {
+    readFirstMessage?: typeof getFirstUserMessageContent;
+    appendToBuffer?: typeof appendToBuffer;
+  } = {}
 ): Promise<HookOutput> {
   const readFirstMessage = deps.readFirstMessage ?? getFirstUserMessageContent;
+  const doAppendToBuffer = deps.appendToBuffer ?? appendToBuffer;
   try {
     // Use agent_transcript_path (new field) or fall back to transcript_path
     const transcriptPath = input.agent_transcript_path || input.transcript_path;
@@ -346,28 +391,37 @@ export async function handleHook(
     const rawRunId = firstMsg ? extractRunTag(firstMsg) : null;
     const runId = rawRunId ? sanitizeLineSafe(rawRunId) : null;
 
-    // Write to buffer
-    appendToBuffer(metrics, {
+    // Write to buffer. A null return means appendToBuffer skipped the write
+    // under lock contention (buffer.ts already wrote its own "Could not
+    // acquire lock … skipping" warning) — do not follow it with a
+    // capture-success summary, which would claim a capture that didn't
+    // happen. TODO: if the null-vs-throw contention convention (84d49989)
+    // later flips appendToBuffer to throwing LockAcquisitionError instead of
+    // returning null, this becomes a `catch (LockAcquisitionError)` around
+    // the call below rather than a null check.
+    const appended = doAppendToBuffer(metrics, {
       agentName: agentName || undefined,
       projectPath: input.cwd,
       runId: runId || undefined,
       source: 'hook',
     });
 
-    // Build summary components
-    const modelShort = formatModelName(metrics.model);
-    const tokensK = (metrics.tokens.total_effective / 1000).toFixed(1);
-    const toolCount = metrics.execution.tool_use_count;
-    const toolSummary = toolCount > 0
-      ? `${toolCount} tool${toolCount !== 1 ? 's' : ''}`
-      : 'no tools';
-    const name = agentName || agentId;
+    if (appended !== null) {
+      // Build summary components
+      const modelShort = formatModelName(metrics.model);
+      const tokensK = (metrics.tokens.total_effective / 1000).toFixed(1);
+      const toolCount = metrics.execution.tool_use_count;
+      const toolSummary = toolCount > 0
+        ? `${toolCount} tool${toolCount !== 1 ? 's' : ''}`
+        : 'no tools';
+      const name = agentName || agentId;
 
-    // Build summary line
-    const summary = `[${name}] ${modelShort} | ${metrics.duration_formatted} | ${tokensK}k tokens | ${toolSummary}`;
+      // Build summary line
+      const summary = `[${name}] ${modelShort} | ${metrics.duration_formatted} | ${tokensK}k tokens | ${toolSummary}`;
 
-    // Output to stderr for visibility
-    console.error(summary);
+      // Output to stderr for visibility
+      console.error(summary);
+    }
 
     return {
       decision: 'approve',
@@ -383,7 +437,10 @@ export async function handleHook(
 /**
  * Read hook input from stdin
  */
-export async function readStdin(stream?: NodeJS.ReadableStream): Promise<string> {
+export async function readStdin(
+  stream?: NodeJS.ReadableStream,
+  hardDeadlineMs: number = STDIN_HARD_DEADLINE_MS
+): Promise<string> {
   const src = stream ?? process.stdin;
   return new Promise((resolve) => {
     let data = '';
@@ -394,6 +451,7 @@ export async function readStdin(stream?: NodeJS.ReadableStream): Promise<string>
       if (resolved) return;
       resolved = true;
       if (idleTimer !== undefined) clearTimeout(idleTimer);
+      clearTimeout(deadlineTimer);
       resolve(value);
     };
 
@@ -406,13 +464,42 @@ export async function readStdin(stream?: NodeJS.ReadableStream): Promise<string>
       }, STDIN_READ_TIMEOUT_MS);
     };
 
+    // Absolute ceiling, started once at promise construction and independent
+    // of the idle timer: a stalled partial write (data flowing, then silence
+    // with no 'end'/'error') keeps rescheduling the idle timer forever and
+    // would otherwise never resolve. On fire, resolve with whatever has
+    // accumulated so far — matching the 'end' handler's fallback — so a
+    // genuinely truncated payload fails diagnostically in main()'s JSON.parse
+    // rather than hanging the hook.
+    const deadlineTimer = setTimeout(() => {
+      process.stderr.write(
+        `[agent-metrics] stdin read exceeded ${hardDeadlineMs}ms hard deadline with ${Buffer.byteLength(data)} bytes accumulated; proceeding with partial data\n`
+      );
+      done(data || '{}');
+    }, hardDeadlineMs);
+
     if (src === process.stdin) src.setEncoding('utf8');
     src.on('data', (chunk) => {
-      data += chunk instanceof Buffer ? chunk.toString('utf8') : chunk;
-      scheduleIdleTimeout();
-      if (Buffer.byteLength(data) > MAX_STDIN_BYTES) {
+      // done() only flips `resolved` and returns early on later calls — it
+      // does not stop this handler from running, so without this guard every
+      // remaining chunk of an adversarial payload still gets appended to
+      // `data` and re-scanned by Buffer.byteLength for the rest of the
+      // stream. The 1MB cap below then only bounds resolution latency, not
+      // memory: `data` keeps growing unboundedly after the cap has already
+      // fired.
+      if (resolved) return;
+
+      const chunkStr = chunk instanceof Buffer ? chunk.toString('utf8') : chunk;
+      if (Buffer.byteLength(data) + Buffer.byteLength(chunkStr) > MAX_STDIN_BYTES) {
+        process.stderr.write(
+          `[agent-metrics] stdin exceeded ${MAX_STDIN_BYTES} bytes; discarding payload\n`
+        );
         done('{}');
+        return;
       }
+
+      data += chunkStr;
+      scheduleIdleTimeout();
     });
     src.on('end', () => {
       done(data || '{}');

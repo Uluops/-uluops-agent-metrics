@@ -79,7 +79,11 @@ function findAgentFileInProject(
       }
     }
   } catch {
-    // Permission or read error — skip silently
+    // AUDIT-OK(no_empty_catch): per-project readdir skip inside a loop over
+    // every project dir — one unreadable project directory is expected
+    // noise (permissions, races with concurrent writers) and reporting it
+    // per-project would be N-noisy for a single caller trying to find one
+    // agent file. Callers only care whether the file was found at all.
   }
 
   return null;
@@ -166,6 +170,8 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
   const projectFolders = await fs.promises.readdir(projectsDir, { withFileTypes: true });
   const directories = projectFolders.filter((f) => f.isDirectory());
 
+  const scan: ScanObservation = { skipped: 0 };
+
   // Scan each project directory in parallel
   const scanResults = await Promise.allSettled(
     directories.map(async (folder) => {
@@ -176,7 +182,13 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
       // Collect agent file paths from both layouts
       const candidateFiles: Array<{ filePath: string; projectDir: string }> = [];
 
-      const entries = await fs.promises.readdir(projectDir, { withFileTypes: true });
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(projectDir, { withFileTypes: true });
+      } catch (err) {
+        recordScanSkip(scan, projectDir, err);
+        return agentFiles;
+      }
 
       for (const entry of entries) {
         // Flat layout (legacy): agent-{id}.jsonl directly in project dir
@@ -195,7 +207,12 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
               }
             }
           } catch {
-            // subagents dir doesn't exist or isn't readable — skip
+            // AUDIT-OK(no_empty_catch): a missing subagents/ dir is the
+            // common case — most session dirs never spawn a subagent, so
+            // this fires far more often than it signals a real problem.
+            // Documented as the expected edge case in the JSDoc above
+            // ("Individual project folder scan fails → that project is
+            // skipped silently").
           }
         }
       }
@@ -203,13 +220,18 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
       // Get stats for all candidate files in parallel
       const statResults = await Promise.allSettled(
         candidateFiles.map(async ({ filePath, projectDir: pDir }) => {
-          const stats = await fs.promises.stat(filePath);
-          return { filePath, projectDir: pDir, mtime: stats.mtimeMs };
+          try {
+            const stats = await fs.promises.stat(filePath);
+            return { filePath, projectDir: pDir, mtime: stats.mtimeMs };
+          } catch (err) {
+            recordScanSkip(scan, filePath, err);
+            return null;
+          }
         })
       );
 
       for (const result of statResults) {
-        if (result.status === 'fulfilled') {
+        if (result.status === 'fulfilled' && result.value) {
           agentFiles.push(result.value);
         }
       }
@@ -226,6 +248,8 @@ export async function findRecentAgentFiles(limit: number = 10): Promise<AgentFil
     }
   }
 
+  reportScanSkips('findRecentAgentFiles', scan);
+
   // Sort by modification time (newest first) and limit
   return allAgentFiles
     .sort((a, b) => b.mtime - a.mtime)
@@ -238,6 +262,49 @@ function isCodexRolloutFile(filename: string): boolean {
 }
 
 /**
+ * Lightweight accumulator for scan-time skip observability. Threaded through
+ * a single scan by reference so every skip records once; the caller emits
+ * ONE summary line at the end — never per-file — naming the count and the
+ * first failing path (precedent: hook.ts's malformedLineCount).
+ */
+interface ScanObservation {
+  skipped: number;
+  firstSkipPath?: string;
+  firstSkipError?: string;
+}
+
+function recordScanSkip(scan: ScanObservation, skipPath: string, err: unknown): void {
+  scan.skipped++;
+  if (scan.firstSkipPath === undefined) {
+    scan.firstSkipPath = skipPath;
+    scan.firstSkipError = err instanceof Error ? err.message : String(err);
+  }
+}
+
+function reportScanSkips(label: string, scan: ScanObservation): void {
+  if (scan.skipped === 0) return;
+  process.stderr.write(
+    `Warning: ${label} skipped ${scan.skipped} unreadable path(s); first: ${scan.firstSkipPath} (${scan.firstSkipError})\n`
+  );
+}
+
+/**
+ * Threshold past which a Codex session scan emits a size notice. This is an
+ * OBSERVATION, not a cap (house style: see CODEX_WALK_MAX_DEPTH below) — the
+ * scan remains exhaustive by contract regardless of how many files it finds;
+ * this only tells an operator that a scan is unusually large, in case a
+ * runaway CODEX_HOME warrants investigation.
+ */
+const CODEX_SCAN_NOTICE_THRESHOLD = 1000;
+
+function reportCodexScan(label: string, filesWalked: number, scan: ScanObservation): void {
+  if (filesWalked > CODEX_SCAN_NOTICE_THRESHOLD) {
+    process.stderr.write(`Warning: scanning ${filesWalked} Codex session files…\n`);
+  }
+  reportScanSkips(label, scan);
+}
+
+/**
  * Max directory recursion depth for the Codex session walk. Bounds stack usage
  * on pathological trees. Symlinked directories are NOT followed — a Dirent from
  * readdir reports isDirectory() === false for a symlink — so directory cycles
@@ -245,56 +312,94 @@ function isCodexRolloutFile(filename: string): boolean {
  */
 const CODEX_WALK_MAX_DEPTH = 12;
 
-async function walkCodexSessionFiles(
-  dir: string,
-  files: string[] = [],
-  depth = 0
-): Promise<string[]> {
-  if (depth > CODEX_WALK_MAX_DEPTH) return files;
+async function walkCodexSessionFiles(dir: string, scan: ScanObservation): Promise<string[]> {
+  // The file accumulator is function-internal (closes 7f75881c): callers get
+  // a fresh array from the return value, not a shared buffer threaded through
+  // recursive calls as a parameter.
+  const files: string[] = [];
 
-  let entries: fs.Dirent[];
-  try {
-    entries = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch {
-    return files;
-  }
+  async function walk(currentDir: string, depth: number): Promise<void> {
+    if (depth > CODEX_WALK_MAX_DEPTH) return;
 
-  await Promise.all(entries.map(async (entry) => {
-    const entryPath = path.join(dir, entry.name);
-    // Only recurse into REAL directories. Dirent.isDirectory() is false for a
-    // symlink (readdir reports the link type, not its target), so a symlinked
-    // directory — and any cycle it could form — is skipped, not followed.
-    if (entry.isDirectory()) {
-      await walkCodexSessionFiles(entryPath, files, depth + 1);
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+    } catch (err) {
+      // depth 0 is the sessions dir itself not existing — the common case
+      // when Codex has never been used on this machine; stays silent (same
+      // reasoning as the AUDIT-OK precedents elsewhere in this file). A
+      // deeper directory failing to read while its siblings are readable is
+      // the genuinely unusual case worth surfacing.
+      if (depth > 0) {
+        recordScanSkip(scan, currentDir, err);
+      }
       return;
     }
-    if (entry.isFile() && isCodexRolloutFile(entry.name)) {
-      files.push(entryPath);
-    }
-  }));
 
+    await Promise.all(entries.map(async (entry) => {
+      const entryPath = path.join(currentDir, entry.name);
+      // Only recurse into REAL directories. Dirent.isDirectory() is false for a
+      // symlink (readdir reports the link type, not its target), so a symlinked
+      // directory — and any cycle it could form — is skipped, not followed.
+      if (entry.isDirectory()) {
+        await walk(entryPath, depth + 1);
+        return;
+      }
+      if (entry.isFile() && isCodexRolloutFile(entry.name)) {
+        files.push(entryPath);
+      }
+    }));
+  }
+
+  await walk(dir, 0);
   return files;
 }
 
-function readCodexSessionMeta(filePath: string): Record<string, unknown> | null {
+/**
+ * Read and parse the leading `session_meta` record of a Codex rollout file.
+ *
+ * @param filePath - Path to the rollout file
+ * @param scan - Optional scan-observation accumulator. When provided, a
+ *   read failure (open/read) or a JSON.parse failure on the first line is
+ *   recorded into it — distinguished from the four shape-mismatch returns
+ *   below (empty first line, non-object JSON, wrong `type`, non-object
+ *   `payload`), which are all silent: they mean "not a session_meta record
+ *   we care about", not "failed to read the file".
+ * @returns The `session_meta.payload` object, or null
+ */
+function readCodexSessionMeta(filePath: string, scan?: ScanObservation): Record<string, unknown> | null {
+  let fd: number;
   try {
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const buffer = Buffer.alloc(8192);
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
-      const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0];
-      if (!firstLine) return null;
-      const parsed = JSON.parse(firstLine) as unknown;
-      if (!parsed || typeof parsed !== 'object') return null;
-      const record = parsed as Record<string, unknown>;
-      if (record.type !== 'session_meta') return null;
-      const payload = record.payload;
-      return payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
+    fd = fs.openSync(filePath, 'r');
+  } catch (err) {
+    if (scan) recordScanSkip(scan, filePath, err);
     return null;
+  }
+  try {
+    let bytesRead: number;
+    const buffer = Buffer.alloc(8192);
+    try {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    } catch (err) {
+      if (scan) recordScanSkip(scan, filePath, err);
+      return null;
+    }
+    const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0];
+    if (!firstLine) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(firstLine);
+    } catch (err) {
+      if (scan) recordScanSkip(scan, filePath, err);
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object') return null;
+    const record = parsed as Record<string, unknown>;
+    if (record.type !== 'session_meta') return null;
+    const payload = record.payload;
+    return payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -304,7 +409,9 @@ function readCodexSessionMeta(filePath: string): Record<string, unknown> | null 
  * Searches `$CODEX_HOME/sessions` when `CODEX_HOME` is set, otherwise
  * `~/.codex/sessions`. The filename suffix is checked first, then the
  * `session_meta.payload.id` value is used as a fallback for older or renamed
- * rollout files.
+ * rollout files. This fallback is why the scan is exhaustive by contract:
+ * every rollout file under the sessions directory must be considered, not
+ * sampled or capped, or a renamed file's id would never be found.
  *
  * @param agentId - Codex UUIDv7 subagent/session id
  * @returns Location of the rollout file, or null if not found
@@ -312,24 +419,31 @@ function readCodexSessionMeta(filePath: string): Record<string, unknown> | null 
 export async function findCodexAgentFile(agentId: string): Promise<AgentFileLocation | null> {
   const sessionsDir = getCodexSessionsDir();
   const filenameSuffix = `-${agentId}.jsonl`;
-  const files = await walkCodexSessionFiles(sessionsDir);
+  const scan: ScanObservation = { skipped: 0 };
+  const files = await walkCodexSessionFiles(sessionsDir, scan);
 
+  let result: AgentFileLocation | null = null;
   for (const filePath of files) {
     if (!path.basename(filePath).endsWith(filenameSuffix)) continue;
-    const meta = readCodexSessionMeta(filePath);
+    const meta = readCodexSessionMeta(filePath, scan);
     const cwd = typeof meta?.cwd === 'string' ? meta.cwd : sessionsDir;
-    return { filePath, projectDir: cwd };
+    result = { filePath, projectDir: cwd };
+    break;
   }
 
-  for (const filePath of files) {
-    const meta = readCodexSessionMeta(filePath);
-    if (meta?.id === agentId) {
-      const cwd = typeof meta.cwd === 'string' ? meta.cwd : sessionsDir;
-      return { filePath, projectDir: cwd };
+  if (!result) {
+    for (const filePath of files) {
+      const meta = readCodexSessionMeta(filePath, scan);
+      if (meta?.id === agentId) {
+        const cwd = typeof meta.cwd === 'string' ? meta.cwd : sessionsDir;
+        result = { filePath, projectDir: cwd };
+        break;
+      }
     }
   }
 
-  return null;
+  reportCodexScan('findCodexAgentFile', files.length, scan);
+  return result;
 }
 
 /**
@@ -337,7 +451,10 @@ export async function findCodexAgentFile(agentId: string): Promise<AgentFileLoca
  *
  * Scans Codex session rollout JSONL files and returns only files whose
  * `session_meta.payload.thread_source` is `subagent`. Results are sorted by
- * modification time, newest first.
+ * modification time, newest first. The scan is exhaustive by contract: every
+ * rollout file under the sessions directory is read (via readCodexSessionMeta,
+ * the same session_meta.payload fallback path used by findCodexAgentFile's id
+ * lookup), not sampled or capped.
  *
  * @param limit - Maximum number of files to return (default: 10)
  * @returns Recent Codex subagent rollout locations
@@ -345,16 +462,22 @@ export async function findCodexAgentFile(agentId: string): Promise<AgentFileLoca
 export async function findRecentCodexAgentFiles(limit: number = 10): Promise<AgentFileLocation[]> {
   if (limit <= 0) return [];
   const sessionsDir = getCodexSessionsDir();
-  const files = await walkCodexSessionFiles(sessionsDir);
+  const scan: ScanObservation = { skipped: 0 };
+  const files = await walkCodexSessionFiles(sessionsDir, scan);
   const candidates: Array<AgentFileLocation & { mtime: number }> = [];
 
   const stats = await Promise.allSettled(
     files.map(async (filePath) => {
-      const meta = readCodexSessionMeta(filePath);
+      const meta = readCodexSessionMeta(filePath, scan);
       if (meta?.thread_source !== 'subagent') return null;
-      const stat = await fs.promises.stat(filePath);
-      const cwd = typeof meta.cwd === 'string' ? meta.cwd : sessionsDir;
-      return { filePath, projectDir: cwd, mtime: stat.mtimeMs };
+      try {
+        const stat = await fs.promises.stat(filePath);
+        const cwd = typeof meta.cwd === 'string' ? meta.cwd : sessionsDir;
+        return { filePath, projectDir: cwd, mtime: stat.mtimeMs };
+      } catch (err) {
+        recordScanSkip(scan, filePath, err);
+        return null;
+      }
     })
   );
 
@@ -363,6 +486,8 @@ export async function findRecentCodexAgentFiles(limit: number = 10): Promise<Age
       candidates.push(result.value);
     }
   }
+
+  reportCodexScan('findRecentCodexAgentFiles', files.length, scan);
 
   return candidates
     .sort((a, b) => b.mtime - a.mtime)

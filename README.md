@@ -90,6 +90,12 @@ agent-metrics extract a80e24f -f summary
 
 # Show buffered hook captures after SubagentStop auto-capture is configured
 agent-metrics report --current
+
+# Show buffer statistics (alias for buffer status)
+agent-metrics status
+
+# Show usage examples for common workflows
+agent-metrics examples
 ```
 
 Output:
@@ -133,6 +139,9 @@ agent-metrics extract a7c642b -f tracker --agent-name code-validator
 agent-metrics extract a7c642b a03c37d af0c1a1 \
     -f tracker \
     --agent-names "code-validator,test-architect,security-analyst"
+
+# Scope the search to one project path
+agent-metrics extract a80e24f -p ~/uluops/ops-uluops-api
 ```
 
 ### Compare Multiple Agents
@@ -332,6 +341,36 @@ main().catch((error) => {
 });
 ```
 
+### Error signalling
+
+These functions distinguish "not found" from "found but unusable" differently — check
+which contract applies before assuming a `null`/empty result means the same thing as a
+missing throw:
+
+- **`extractAgentMetrics`** — can both return `null` AND throw. It returns `null` only when
+  no matching agent file could be located at all. If a file WAS found but could not be read
+  or contained no valid messages/records, it throws (Claude path via `extractMetricsFromFile`;
+  Codex path via `extractCodexMetricsFromFile`). The example above only shows the `null`
+  branch — do not assume a bare `if (!metrics) ...` check is sufficient; wrap the call, or let
+  the throw propagate, if the file-found-but-corrupt case matters to the caller.
+- **`extractMultipleAgentMetrics`** — never rejects the batch. Each id resolves to its metrics
+  or to `null` (not-found OR extraction-failed, collapsed); a failure is written to stderr
+  naming the id and the reason.
+- **`extractMetricsFromFile`** — throws (never returns null) if the path cannot be read, or if
+  the file was readable but contained no valid messages.
+- **`findAgentFile`** — returns `null` if no matching file exists; does not throw for
+  not-found.
+- **`appendToBuffer`** — returns `null` (not a throw) when the buffer lock could not be
+  acquired. It is fail-closed by design: it is called from the SubagentStop hook, which must
+  never fail the hook itself, so lock contention is a silently-skipped best-effort capture
+  rather than a raised error.
+- **`cleanupExpired`, `clearSession`, `clearAgents`, `annotateBufferEntries`** — throw
+  `LockAcquisitionError` on lock contention (unlike `appendToBuffer`, these are explicit
+  maintenance/query operations, not a fire-and-forget hook capture).
+- **`readBuffer`** — returns `[]` if the buffer file does not exist yet; throws if the file
+  exists but cannot be read; silently skips (not throws) individual lines that fail to parse
+  or fail shape validation.
+
 ### Buffer Functions
 
 ```typescript
@@ -344,9 +383,11 @@ import {
   clearSession,
   clearAgents,
   cleanupExpired,
+  annotateBufferEntries,
   readBuffer,
   readValidEntries,
   entriesToTrackerFormat,
+  LockAcquisitionError, // thrown by the four rewrite ops under lock contention
 } from '@uluops/agent-metrics';
 
 // Query buffer with filters
@@ -357,6 +398,17 @@ const entries = queryBuffer({
   since: new Date(Date.now() - 3600000), // Last hour
   includeExpired: false,
 });
+
+// LockAcquisitionError exposes only .message/.name — catch it to retry or skip
+try {
+  cleanupExpired();
+} catch (e) {
+  if (e instanceof LockAcquisitionError) {
+    // skip or retry
+  } else {
+    throw e;
+  }
+}
 
 // Append with a run token so a later queryBuffer({ runId }) / `buffer list --run`
 // collects exactly this run's agents (v0.8.0). run_id is a query key only —
@@ -539,6 +591,8 @@ import type {
   BufferEntry,
   BufferConfig,
   BufferStats,
+  AppendOptions,
+  BufferQuery,
   // Format types
   ExtractFormat,
   BufferFormat,
@@ -570,6 +624,8 @@ Each JSONL file contains all messages from an agent invocation, including:
 
 ## Commands Reference
 
+Run `agent-metrics examples` for a built-in usage guide covering common workflows.
+
 ### Core Commands
 
 | Command | Description |
@@ -577,7 +633,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 | `status` | Show buffer statistics (alias for `buffer status`) |
 | `report [-n limit] [-s session] [--current] [--provider auto|claude|codex]` | Show recent Claude-buffer auto-captured metrics; `codex` exits with guidance because report is buffer-backed |
 | `list [-n <limit>] [-p project] [--provider auto|claude|codex]` | List recent agent runs from session files |
-| `extract <ids...> [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
+| `extract <ids...> [-p project] [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
 | `compare <id...> [-p project] [--provider auto|claude|codex]` | Compare multiple agents side-by-side (`auto` resolves each id's harness independently, so a mixed Claude+Codex comparison works) |
 | `find <id> [-p project] [--provider auto|claude|codex]` | Find the file location for an agent |
 | `examples` | Show usage examples for common workflows |
@@ -649,6 +705,13 @@ agent-metrics log clear
 
 # Clear all logs including rotated files
 agent-metrics log clear --all
+```
+
+### Log Path
+
+```bash
+# Print log file path (useful for scripting)
+agent-metrics log path
 ```
 
 ## Auto-Capture with SubagentStop Hook
@@ -784,6 +847,12 @@ agent-metrics buffer session <session-id> --format tracker
 
 # Clean up expired entries
 agent-metrics buffer clear --expired
+
+# Clear entries for a specific session
+agent-metrics buffer clear --session <session-id>
+
+# Clear specific agent IDs
+agent-metrics buffer clear --agents a7c642b a03c37d
 ```
 
 ### Workflow Integration

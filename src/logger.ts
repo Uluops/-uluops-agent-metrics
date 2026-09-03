@@ -9,8 +9,17 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import type { AgentMetrics } from './types.js';
 
+/**
+ * Log severity level. Ordered debug < info < warn < error; `LoggerConfig.minLevel`
+ * is a floor — entries below it are dropped, entries at or above it are written.
+ */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+/**
+ * Process-wide logger configuration. Mutated only via {@link configureLogger}
+ * and read via {@link getLoggerConfig}; never assign to a module-level config
+ * object directly.
+ */
 export interface LoggerConfig {
   /** Path to log file */
   logPath: string;
@@ -55,17 +64,57 @@ export interface LogStats {
   newestEntry: string | null;
   /** Number of rotated log files */
   rotatedFiles: number;
+  /**
+   * Set when the file exists (existsSync succeeded) but stat-ing or reading it
+   * failed — e.g. EACCES, EISDIR, or the rotation race where rotateLogFile
+   * renames the file between existsSync and statSync. When set,
+   * lineCount/oldestEntry/newestEntry are reset to their unknown values
+   * (0/null/null) rather than left at a stale or partial read; sizeBytes is
+   * trustworthy only if statSync itself succeeded (it stays 0 otherwise).
+   */
+  readError?: string;
 }
 
 let currentConfig: LoggerConfig = { ...DEFAULT_CONFIG };
 
 /**
+ * Type guard for {@link LogLevel}. Uses `hasOwnProperty` rather than the `in`
+ * operator so inherited Object.prototype keys (e.g. `'constructor'`) cannot
+ * pass as a valid level.
+ */
+function isLogLevel(value: unknown): value is LogLevel {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(LOG_LEVELS, value);
+}
+
+/**
  * Configure the logger with partial settings. Unspecified fields retain their current values.
  *
+ * Without `exactOptionalPropertyTypes` in tsconfig, callers can pass `undefined`
+ * or an invalid `minLevel` and still typecheck. Such keys are rejected here —
+ * warned to stderr and the current value retained (never silently falling back
+ * to DEFAULT_CONFIG, which would loosen a level a caller deliberately set) —
+ * rather than thrown, since this module must never fail its host on bad input.
+ * Sibling keys in the same call are unaffected and still applied.
+ *
  * @param config - Partial configuration to merge with current settings
+ * @see README.md § Logger Functions
  */
 export function configureLogger(config: Partial<LoggerConfig>): void {
-  currentConfig = { ...currentConfig, ...config };
+  const patch: Partial<LoggerConfig> = { ...config };
+
+  for (const key of Object.keys(patch) as (keyof LoggerConfig)[]) {
+    if (patch[key] === undefined) {
+      process.stderr.write(`Warning: configureLogger ignored "${key}": received undefined\n`);
+      delete patch[key];
+    }
+  }
+
+  if ('minLevel' in patch && !isLogLevel(patch.minLevel)) {
+    process.stderr.write(`Warning: configureLogger ignored "minLevel": received ${JSON.stringify(patch.minLevel)}\n`);
+    delete patch.minLevel;
+  }
+
+  currentConfig = { ...currentConfig, ...patch };
 }
 
 /**
@@ -206,6 +255,16 @@ export function error(message: string, data?: Record<string, unknown>): void {
 }
 
 /**
+ * Options for {@link logMetricsCapture}. In-file only — deliberately not
+ * exported from index.ts to minimize the public surface.
+ */
+interface MetricsCaptureOptions {
+  agentName?: string;
+  projectPath?: string;
+  source?: 'hook' | 'cli' | 'api';
+}
+
+/**
  * Log a structured metrics capture event at info level.
  *
  * @param agentId - The agent ID that was captured
@@ -223,11 +282,7 @@ export function logMetricsCapture(
   agentId: string,
   sessionId: string,
   metrics: Pick<AgentMetrics, 'model' | 'duration_ms' | 'tokens' | 'execution'>,
-  options?: {
-    agentName?: string;
-    projectPath?: string;
-    source?: 'hook' | 'cli' | 'api';
-  }
+  options?: MetricsCaptureOptions
 ): void {
   info('Metrics captured', {
     agent_id: agentId,
@@ -293,11 +348,17 @@ export function getLogStats(): LogStats {
     rotatedFiles: 0,
   };
 
-  try {
-    if (fs.existsSync(currentConfig.logPath)) {
-      stats.exists = true;
-      stats.sizeBytes = fs.statSync(currentConfig.logPath).size;
+  if (fs.existsSync(currentConfig.logPath)) {
+    stats.exists = true;
 
+    // stat/read are a separate failure mode from existsSync above (EACCES,
+    // EISDIR, or the rotation race: rotateLogFile renames the file between
+    // existsSync and statSync/readFileSync). A failure must not leave
+    // sizeBytes/lineCount/oldestEntry/newestEntry at a stale or
+    // partially-computed value — reset them to their unknown state and
+    // record why. sizeBytes survives only when statSync itself succeeded.
+    try {
+      stats.sizeBytes = fs.statSync(currentConfig.logPath).size;
       const content = fs.readFileSync(currentConfig.logPath, 'utf-8');
       const lines = content.trim().split('\n').filter(Boolean);
       stats.lineCount = lines.length;
@@ -310,16 +371,20 @@ export function getLogStats(): LogStats {
         stats.oldestEntry = firstMatch?.[1] || null;
         stats.newestEntry = lastMatch?.[1] || null;
       }
+    } catch (err) {
+      stats.lineCount = 0;
+      stats.oldestEntry = null;
+      stats.newestEntry = null;
+      stats.readError = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Warning: Failed to read log file for stats: ${stats.readError}\n`);
     }
+  }
 
-    // Count rotated files
-    for (let i = 1; i <= currentConfig.maxFiles; i++) {
-      if (fs.existsSync(`${currentConfig.logPath}.${i}`)) {
-        stats.rotatedFiles++;
-      }
+  // Count rotated files
+  for (let i = 1; i <= currentConfig.maxFiles; i++) {
+    if (fs.existsSync(`${currentConfig.logPath}.${i}`)) {
+      stats.rotatedFiles++;
     }
-  } catch {
-    // Ignore errors
   }
 
   return stats;

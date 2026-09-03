@@ -159,8 +159,8 @@ export function registerCoreCommands(program: Command): void {
         if (Object.keys(suppliedNames).length > 0) {
           try {
             annotateBufferEntries(suppliedNames);
-          } catch {
-            // ignore — extract output is already complete
+          } catch (err) {
+            console.error(`Warning: could not persist agent name(s) to the buffer for ${Object.keys(suppliedNames).join(', ')}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
 
@@ -238,20 +238,25 @@ export function registerCoreCommands(program: Command): void {
     .option('-p, --project <path>', 'Project path to search in')
     .addOption(providerOption())
     .action(async (agentId: string, options: { project?: string; provider: MetricsProvider }) => {
-      const provider = options.provider === 'auto'
-        ? (CODEX_UUIDV7_PATTERN.test(agentId) ? 'codex' : 'claude')
-        : options.provider;
-      const location = provider === 'codex'
-        ? await findCodexAgentFile(agentId)
-        : findAgentFile(agentId, options.project);
+      try {
+        const provider = options.provider === 'auto'
+          ? (CODEX_UUIDV7_PATTERN.test(agentId) ? 'codex' : 'claude')
+          : options.provider;
+        const location = provider === 'codex'
+          ? await findCodexAgentFile(agentId)
+          : findAgentFile(agentId, options.project);
 
-      if (!location) {
-        console.error(`Agent file not found for ID: ${agentId}`);
-        console.error('Run "agent-metrics list" to see available agent IDs.');
+        if (!location) {
+          console.error(`Agent file not found for ID: ${agentId}`);
+          console.error('Run "agent-metrics list" to see available agent IDs.');
+          process.exit(1);
+        }
+
+        console.log(JSON.stringify(location, null, 2));
+      } catch (error) {
+        console.error('Error finding agent file:', error instanceof Error ? error.message : error);
         process.exit(1);
       }
-
-      console.log(JSON.stringify(location, null, 2));
     });
 
   // Compare command (useful for workflow runs with multiple validators)

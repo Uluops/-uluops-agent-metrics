@@ -72,7 +72,14 @@ export {
   entriesToTrackerFormat,
 } from './buffer.js';
 
-export type { BufferEntry, BufferConfig, BufferStats, TrackerAgentFormat } from './buffer.js';
+export type {
+  BufferEntry,
+  BufferConfig,
+  BufferStats,
+  TrackerAgentFormat,
+  AppendOptions,
+  BufferQuery,
+} from './buffer.js';
 
 // Lock primitives. LockAcquisitionError is the catchable contract for the
 // fail-closed buffer-rewrite operations above (v0.7.0 BREAKING change).

@@ -10,7 +10,7 @@
  * - Project name extraction
  */
 
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -28,6 +28,8 @@ import {
   getClaudeProjectsDir,
   findAgentFile,
   findRecentAgentFiles,
+  findCodexAgentFile,
+  findRecentCodexAgentFiles,
 } from './utils.js';
 
 // Test configuration with isolated temp directory
@@ -335,6 +337,177 @@ describe('Utils Module', () => {
       for (const item of result) {
         assert.ok('filePath' in item);
         assert.ok('projectDir' in item);
+      }
+    });
+  });
+
+  describe('Codex scan skip reporting (issues 6f86d9e3, 956c263f, c0c04a45)', () => {
+    const CODEX_TEST_DIR = path.join(TEST_DIR, 'codex-scan');
+    const originalEnv = { ...process.env };
+    let originalStderrWrite: typeof process.stderr.write;
+    let captured: string;
+
+    function freshCodexHome(name: string): { codexHome: string; sessionsDir: string } {
+      const codexHome = path.join(CODEX_TEST_DIR, name);
+      const sessionsDir = path.join(codexHome, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      process.env.CODEX_HOME = codexHome;
+      return { codexHome, sessionsDir };
+    }
+
+    function sessionMetaLine(overrides: Record<string, unknown> = {}): string {
+      return JSON.stringify({
+        timestamp: '2026-06-08T16:14:05.000Z',
+        type: 'session_meta',
+        payload: {
+          id: 'placeholder',
+          cwd: '/test/project',
+          thread_source: 'subagent',
+          ...overrides,
+        },
+      });
+    }
+
+    before(() => {
+      fs.mkdirSync(CODEX_TEST_DIR, { recursive: true });
+    });
+
+    after(() => {
+      fs.rmSync(CODEX_TEST_DIR, { recursive: true, force: true });
+      process.env = originalEnv;
+    });
+
+    beforeEach(() => {
+      originalStderrWrite = process.stderr.write;
+      captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+    });
+
+    afterEach(() => {
+      process.stderr.write = originalStderrWrite;
+    });
+
+    it('T1: scanning more than CODEX_SCAN_NOTICE_THRESHOLD files emits exactly one size notice naming the count', async () => {
+      const { sessionsDir } = freshCodexHome('over-threshold');
+      const fileCount = 1001; // THRESHOLD (1000) + 1
+      for (let i = 0; i < fileCount; i++) {
+        fs.writeFileSync(path.join(sessionsDir, `rollout-${i}.jsonl`), '');
+      }
+
+      const result = await findCodexAgentFile('nonexistent-agent-id');
+      assert.strictEqual(result, null);
+
+      const noticeLines = captured.split('\n').filter((l) => /scanning \d+ Codex session files/.test(l));
+      assert.strictEqual(noticeLines.length, 1, `Expected exactly one size notice, got:\n${captured}`);
+      assert.ok(noticeLines[0]?.includes(String(fileCount)), `Notice should name the count ${fileCount}, got: ${noticeLines[0]}`);
+    });
+
+    it('T2: an unreadable sessions/ subdirectory beside a readable rollout does not hide the readable file, and stderr names the skipped subdirectory', async () => {
+      if (process.getuid?.() === 0) {
+        return;
+      }
+      const { sessionsDir } = freshCodexHome('unreadable-subdir');
+      const targetId = '019eaa28-8e2d-73a2-840f-a00d6cc8795f';
+
+      const readableDir = path.join(sessionsDir, 'readable');
+      fs.mkdirSync(readableDir, { recursive: true });
+      const targetFile = path.join(readableDir, `rollout-2026-06-08-${targetId}.jsonl`);
+      fs.writeFileSync(targetFile, sessionMetaLine({ id: targetId }));
+
+      const blockedDir = path.join(sessionsDir, 'blocked');
+      fs.mkdirSync(blockedDir, { recursive: true });
+      fs.chmodSync(blockedDir, 0o000);
+
+      try {
+        const result = await findCodexAgentFile(targetId);
+        assert.ok(result, 'the readable rollout file must still be found');
+        assert.strictEqual(result.filePath, targetFile);
+        assert.ok(captured.includes(blockedDir), `stderr should name the unreadable subdirectory, got:\n${captured}`);
+      } finally {
+        fs.chmodSync(blockedDir, 0o700);
+      }
+    });
+
+    it('Fix 7 (a): a rollout file matching the id suffix but chmod 0o000 is still returned by filename match, and stderr names the unreadable file', async () => {
+      if (process.getuid?.() === 0) {
+        return;
+      }
+      const { sessionsDir } = freshCodexHome('unreadable-file');
+      const targetId = '019eaa28-8e2d-73a2-840f-a00d6cc8795f';
+      const targetFile = path.join(sessionsDir, `rollout-2026-06-08-${targetId}.jsonl`);
+      fs.writeFileSync(targetFile, sessionMetaLine({ id: targetId }));
+      fs.chmodSync(targetFile, 0o000);
+
+      try {
+        const result = await findCodexAgentFile(targetId);
+        assert.ok(result, 'filename-suffix match must still return a location even though the file cannot be read');
+        assert.strictEqual(result.filePath, targetFile);
+        assert.ok(captured.includes(targetFile), `stderr should name the unreadable file, got:\n${captured}`);
+      } finally {
+        fs.chmodSync(targetFile, 0o700);
+      }
+    });
+
+    it('Fix 7 (b): a rollout file whose first line is not JSON at all is reported with a parse reason', async () => {
+      const { sessionsDir } = freshCodexHome('malformed-json');
+      const badFile = path.join(sessionsDir, 'rollout-bad.jsonl');
+      fs.writeFileSync(badFile, 'not json at all\n');
+      // A second, unrelated valid file so the id lookup falls through both
+      // loops without an early match (forces readCodexSessionMeta to run on
+      // badFile in the id-fallback loop too).
+      fs.writeFileSync(path.join(sessionsDir, 'rollout-ok.jsonl'), sessionMetaLine({ id: 'other-id' }));
+
+      const result = await findCodexAgentFile('id-that-does-not-exist');
+      assert.strictEqual(result, null);
+      assert.ok(captured.includes(badFile), `stderr should name the malformed file, got:\n${captured}`);
+    });
+
+    it('Fix 7 (c) NEGATIVE: a rollout file whose first line is valid JSON with a different record type produces no stderr', async () => {
+      const { sessionsDir } = freshCodexHome('turn-context-only');
+      const filePath = path.join(sessionsDir, 'rollout-turn-context.jsonl');
+      fs.writeFileSync(filePath, JSON.stringify({
+        timestamp: '2026-06-08T16:14:05.250Z',
+        type: 'turn_context',
+        payload: { model: 'gpt-5.5', cwd: '/test/project' },
+      }) + '\n');
+
+      const result = await findCodexAgentFile('id-that-does-not-exist');
+      assert.strictEqual(result, null);
+      assert.strictEqual(captured, '', `A shape-mismatch (not session_meta) must not be reported as a skip, got:\n${captured}`);
+    });
+  });
+
+  describe('findRecentCodexAgentFiles smoke test (post Fix 6/7 refactor)', () => {
+    const CODEX_TEST_DIR = path.join(TEST_DIR, 'codex-recent-smoke');
+    const originalEnv = { ...process.env };
+
+    before(() => {
+      fs.mkdirSync(CODEX_TEST_DIR, { recursive: true });
+      process.env.CODEX_HOME = CODEX_TEST_DIR;
+    });
+
+    after(() => {
+      fs.rmSync(CODEX_TEST_DIR, { recursive: true, force: true });
+      process.env = originalEnv;
+    });
+
+    it('returns an empty array when the sessions directory does not exist, without emitting stderr', async () => {
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        const result = await findRecentCodexAgentFiles(10);
+        assert.deepStrictEqual(result, []);
+        assert.strictEqual(captured, '', `A missing sessions dir (Codex never used) must stay silent, got:\n${captured}`);
+      } finally {
+        process.stderr.write = originalWrite;
       }
     });
   });

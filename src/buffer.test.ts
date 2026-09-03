@@ -22,6 +22,7 @@ import {
   clearAgents,
   getBufferStats,
   entriesToTrackerFormat,
+  bufferTempPath,
   type BufferConfig,
   type BufferEntry,
 } from './buffer.js';
@@ -94,6 +95,50 @@ describe('Buffer Module', () => {
   });
 
   describe('appendToBuffer', () => {
+    it('issue 33fa21ff: opportunistic GC failure is reported, not silently swallowed', () => {
+      if (process.getuid?.() === 0) {
+        // Root bypasses filesystem permission bits, so chmod 0o200 would not
+        // reproduce the EACCES this test depends on (precedent: core.test.ts ~:273).
+        return;
+      }
+
+      // MUST run first: appendToBuffer's opportunistic GC is time-gated by a
+      // module-scoped `lastGcAt` (F1) that only opens once every 60s. This is
+      // the first appendToBuffer call in the file, so the gate is open (same
+      // constraint documented on "should run opportunistically on append" in
+      // the cleanupExpired describe block below).
+      const gcConfig: BufferConfig = {
+        bufferPath: path.join(TEST_DIR, 'gc-failure-buffer.jsonl'),
+        defaultTTL: TEST_TTL_MS,
+      };
+      writeRawEntry(createTestMetrics({ agent_id: 'gc-fail-expired' }), -1000, gcConfig);
+      // appendFileSync (flag 'a') only needs write access, so the append
+      // below still succeeds; readBuffer's readFileSync inside GC needs read
+      // access and throws EACCES.
+      fs.chmodSync(gcConfig.bufferPath, 0o200);
+
+      const originalStderrWrite = process.stderr.write.bind(process.stderr);
+      const captured: string[] = [];
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        captured.push(chunk.toString());
+        return true;
+      }) as typeof process.stderr.write;
+
+      let entry: BufferEntry | null = null;
+      try {
+        entry = appendToBuffer(createTestMetrics({ agent_id: 'gc-fail-new' }), { config: gcConfig });
+      } finally {
+        process.stderr.write = originalStderrWrite;
+        fs.chmodSync(gcConfig.bufferPath, 0o644);
+      }
+
+      assert.ok(entry, 'appendToBuffer should still return the new entry despite the GC failure');
+      assert.ok(
+        captured.some((line) => /buffer GC failed/.test(line)),
+        `Expected a "buffer GC failed" warning on stderr, got:\n${captured.join('')}`
+      );
+    });
+
     it('should append metrics to buffer file', () => {
       const metrics = createTestMetrics();
       const entry = appendToBuffer(metrics, { config: TEST_CONFIG });
@@ -218,6 +263,83 @@ describe('Buffer Module', () => {
       assert.strictEqual(entries.length, 1);
       assert.strictEqual(entries[0].agent_id, metrics.agent_id);
     });
+
+    describe('issue 0df83bb6 / 44bf69f1: isValidBufferEntry checks every field formatters.ts dereferences unconditionally', () => {
+      it('skips an entry that passed the OLD validator but omits model/duration_ms/duration_formatted/execution', () => {
+        const before = createTestMetrics({ agent_id: 'af7-before' });
+        appendToBuffer(before, { config: TEST_CONFIG });
+
+        // Has metrics.tokens with all five required numeric fields (passes the
+        // old validator) but lacks model, duration_ms, duration_formatted, and
+        // execution — every one of which formatters.ts dereferences without a
+        // guard (e.g. entry.metrics.duration_formatted.padEnd(8)).
+        fs.appendFileSync(
+          TEST_CONFIG.bufferPath,
+          JSON.stringify({
+            agent_id: 'af7-incomplete',
+            session_id: 's',
+            captured_at: '2026-01-01T00:00:00Z',
+            expires_at: '2099-01-01T00:00:00Z',
+            metrics: {
+              tokens: { input: 1, output: 1, cache_creation: 0, cache_read: 0, total_effective: 2 },
+            },
+          }) + '\n'
+        );
+
+        const after = createTestMetrics({ agent_id: 'af7-after' });
+        appendToBuffer(after, { config: TEST_CONFIG });
+
+        const entries = readBuffer(TEST_CONFIG);
+        assert.strictEqual(entries.length, 2, 'The incomplete entry must be skipped, not just the malformed ones');
+        assert.deepStrictEqual(entries.map((e) => e.agent_id), ['af7-before', 'af7-after']);
+      });
+
+      it('control: accepts an entry whose falsy-but-valid fields are 0 (execution.tool_use_count: 0, duration_ms: 0)', () => {
+        fs.appendFileSync(
+          TEST_CONFIG.bufferPath,
+          JSON.stringify({
+            agent_id: 'af7-falsy-valid',
+            session_id: 's',
+            captured_at: '2026-01-01T00:00:00Z',
+            expires_at: '2099-01-01T00:00:00Z',
+            metrics: {
+              model: 'claude-sonnet-4-5-20250929',
+              duration_ms: 0,
+              duration_formatted: '0s',
+              tokens: { input: 0, output: 0, cache_creation: 0, cache_read: 0, total_effective: 0 },
+              execution: { tool_use_count: 0 },
+            },
+          }) + '\n'
+        );
+
+        const entries = readBuffer(TEST_CONFIG);
+        assert.strictEqual(entries.length, 1, '0 is a valid value, not a missing field — must not be over-generalized away');
+        assert.strictEqual(entries[0].agent_id, 'af7-falsy-valid');
+      });
+
+      it('control: accepts an entry lacking only optional cross-harness token fields (cached_input, reasoning_output, thinking, tool)', () => {
+        fs.appendFileSync(
+          TEST_CONFIG.bufferPath,
+          JSON.stringify({
+            agent_id: 'af7-optional-fields-absent',
+            session_id: 's',
+            captured_at: '2026-01-01T00:00:00Z',
+            expires_at: '2099-01-01T00:00:00Z',
+            metrics: {
+              model: 'claude-sonnet-4-5-20250929',
+              duration_ms: 1000,
+              duration_formatted: '1s',
+              tokens: { input: 10, output: 5, cache_creation: 0, cache_read: 0, total_effective: 15 },
+              execution: { tool_use_count: 2 },
+            },
+          }) + '\n'
+        );
+
+        const entries = readBuffer(TEST_CONFIG);
+        assert.strictEqual(entries.length, 1, 'Optional cross-harness token fields must stay optional');
+        assert.strictEqual(entries[0].agent_id, 'af7-optional-fields-absent');
+      });
+    });
   });
 
 
@@ -280,6 +402,86 @@ describe('Buffer Module', () => {
       assert.strictEqual(withExpired.length, 1, 'Should exist in buffer');
       assert.strictEqual(withoutExpired.length, 0, 'Should be expired with TTL=0');
     });
+
+    it('Fix 1: an entry with no end_time anywhere (entry.end_time and metrics.end_time both absent) is excluded by an endTime-windowed query', () => {
+      const metrics = createTestMetrics();
+      delete (metrics as { end_time?: string }).end_time;
+      const now = new Date();
+      // Write the raw line directly (bypassing writeRawEntry, which always sets
+      // entry.end_time = metrics.end_time) so entry.end_time is absent too.
+      const entry = {
+        agent_id: metrics.agent_id,
+        session_id: metrics.session_id,
+        captured_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + TEST_TTL_MS).toISOString(),
+        metrics,
+      };
+      fs.appendFileSync(TEST_CONFIG.bufferPath, JSON.stringify(entry) + '\n');
+
+      const windowed = queryBuffer(
+        { endTimeAfter: new Date(now.getTime() - 60_000), endTimeBefore: new Date(now.getTime() + 60_000) },
+        TEST_CONFIG
+      );
+      assert.strictEqual(windowed.length, 0, 'a row with no end_time cannot satisfy a finish-time window');
+
+      // Control: the same buffer with no window filter still returns the row.
+      const unfiltered = queryBuffer({}, TEST_CONFIG);
+      assert.strictEqual(unfiltered.length, 1);
+    });
+
+    it('Fix 1: an entry with an unparseable end_time is excluded by an endTime-windowed query', () => {
+      writeRawEntry(createTestMetrics({ end_time: 'not-a-date' }), TEST_TTL_MS);
+
+      const windowed = queryBuffer({ endTimeBefore: new Date('2000-01-01T00:00:00Z') }, TEST_CONFIG);
+      assert.strictEqual(windowed.length, 0, 'an unparseable end_time cannot satisfy a finish-time window');
+
+      // Control: the same buffer with no window filter still returns the row.
+      const unfiltered = queryBuffer({}, TEST_CONFIG);
+      assert.strictEqual(unfiltered.length, 1);
+    });
+
+    it('Fix 1 control: a well-formed row whose end_time is inside the window is still returned', () => {
+      const now = new Date();
+      writeRawEntry(createTestMetrics({ end_time: now.toISOString() }), TEST_TTL_MS);
+
+      const windowed = queryBuffer(
+        { endTimeAfter: new Date(now.getTime() - 60_000), endTimeBefore: new Date(now.getTime() + 60_000) },
+        TEST_CONFIG
+      );
+      assert.strictEqual(windowed.length, 1, 'a well-formed in-window end_time must still pass');
+    });
+
+    it('issue 136d461e (query half): an entry with an unparseable captured_at is excluded by a since-windowed query', () => {
+      const metrics = createTestMetrics();
+      const now = new Date();
+      // Write the raw line directly (bypassing writeRawEntry, which always
+      // sets captured_at = now.toISOString()) so captured_at is unparseable.
+      const entry = {
+        agent_id: metrics.agent_id,
+        session_id: metrics.session_id,
+        captured_at: 'not-a-date',
+        end_time: metrics.end_time,
+        expires_at: new Date(now.getTime() + TEST_TTL_MS).toISOString(),
+        metrics,
+      };
+      fs.appendFileSync(TEST_CONFIG.bufferPath, JSON.stringify(entry) + '\n');
+
+      const windowed = queryBuffer({ since: new Date(now.getTime() - 60 * 60 * 1000) }, TEST_CONFIG);
+      assert.strictEqual(windowed.length, 0, 'an unparseable captured_at cannot satisfy a since window');
+
+      // Control: readBuffer never drops the row for this — only the
+      // since-scoped query view excludes it.
+      const unfiltered = queryBuffer({}, TEST_CONFIG);
+      assert.strictEqual(unfiltered.length, 1);
+      assert.strictEqual(readBuffer(TEST_CONFIG).length, 1, 'readBuffer itself must still return the row unfiltered');
+    });
+
+    it('control: a valid recent captured_at is still included under the same since window', () => {
+      appendToBuffer(createTestMetrics(), { config: TEST_CONFIG });
+
+      const windowed = queryBuffer({ since: new Date(Date.now() - 60 * 60 * 1000) }, TEST_CONFIG);
+      assert.strictEqual(windowed.length, 1);
+    });
   });
 
   describe('getLatestForSession', () => {
@@ -315,6 +517,31 @@ describe('Buffer Module', () => {
       assert.strictEqual(all[0].agent_id, 'first');
       assert.strictEqual(all[1].agent_id, 'second');
     });
+
+    it('issue 136d461e: an entry with an unparseable captured_at sorts last, deterministically', () => {
+      // Written FIRST (before the valid entries) so a NaN-comparator's stable,
+      // no-swap behavior would otherwise leave it in its original — wrong —
+      // leading position rather than proving anything about "last".
+      const sessionId = 'nan-sort-session';
+      const metrics = createTestMetrics({ session_id: sessionId, agent_id: 'bad-captured' });
+      const now = new Date();
+      const badEntry = {
+        agent_id: metrics.agent_id,
+        session_id: metrics.session_id,
+        captured_at: 'not-a-date',
+        end_time: metrics.end_time,
+        expires_at: new Date(now.getTime() + TEST_TTL_MS).toISOString(),
+        metrics,
+      };
+      fs.appendFileSync(TEST_CONFIG.bufferPath, JSON.stringify(badEntry) + '\n');
+
+      appendToBuffer(createTestMetrics({ session_id: sessionId, agent_id: 'valid-a' }), { config: TEST_CONFIG });
+      appendToBuffer(createTestMetrics({ session_id: sessionId, agent_id: 'valid-b' }), { config: TEST_CONFIG });
+
+      const all = getAllForSession(sessionId, TEST_CONFIG);
+      assert.strictEqual(all.length, 3);
+      assert.strictEqual(all[all.length - 1].agent_id, 'bad-captured', 'unparseable captured_at must sort last');
+    });
   });
 
   describe('cleanupExpired', () => {
@@ -344,6 +571,65 @@ describe('Buffer Module', () => {
       const entries = readBuffer(TEST_CONFIG);
       assert.strictEqual(entries.length, 2);
       assert.ok(!entries.some((e) => e.agent_id === 'gc-expired'), 'expired entry should be removed by cleanupExpired');
+    });
+  });
+
+  describe('untracked fix: rewrite paths (removeWhere/annotateBufferEntries) preserve quarantined rows', () => {
+    // A quarantined row is a line readBuffer skips (and warns about) rather than
+    // rejecting outright: either it fails isValidBufferEntry (well-formed JSON,
+    // missing a required field) or it fails JSON.parse entirely. Neither should
+    // be permanently deleted the next time a GC/annotate rewrite happens.
+    const SCHEMA_INVALID_LINE = JSON.stringify({ agent_id: 'schema-invalid', session_id: 's1' });
+    const UNPARSEABLE_LINE = '{"agent_id":"unparseable", "session_id":';
+
+    function readRawLines(config: BufferConfig = TEST_CONFIG): string[] {
+      return fs.readFileSync(config.bufferPath, 'utf-8').trim().split('\n').filter(Boolean);
+    }
+
+    it('cleanupExpired: quarantined lines survive a triggered rewrite, and the expired entry is actually gone', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'valid-kept' }), { config: TEST_CONFIG });
+      writeRawEntry(createTestMetrics({ agent_id: 'valid-expired' }), -1000);
+      fs.appendFileSync(TEST_CONFIG.bufferPath, SCHEMA_INVALID_LINE + '\n');
+      fs.appendFileSync(TEST_CONFIG.bufferPath, UNPARSEABLE_LINE + '\n');
+
+      const removedCount = cleanupExpired(TEST_CONFIG);
+      assert.strictEqual(removedCount, 1, 'only the expired valid entry should count as removed');
+
+      const rawLines = readRawLines();
+      assert.ok(rawLines.includes(SCHEMA_INVALID_LINE), 'schema-invalid line must survive the rewrite (fails today)');
+      assert.ok(
+        rawLines.some((l) => l.includes('unparseable')),
+        'unparseable line must survive the rewrite (fails today)'
+      );
+
+      // Control: prove a rewrite actually happened — the expired entry must be gone.
+      const entries = readBuffer(TEST_CONFIG);
+      assert.ok(!entries.some((e) => e.agent_id === 'valid-expired'), 'expired entry should be removed');
+      assert.ok(entries.some((e) => e.agent_id === 'valid-kept'), 'unexpired entry should remain');
+    });
+
+    it('annotateBufferEntries: quarantined lines survive a triggered rewrite', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'annotate-target' }), { config: TEST_CONFIG });
+      fs.appendFileSync(TEST_CONFIG.bufferPath, SCHEMA_INVALID_LINE + '\n');
+      fs.appendFileSync(TEST_CONFIG.bufferPath, UNPARSEABLE_LINE + '\n');
+
+      const updated = annotateBufferEntries({ 'annotate-target': 'renamed' }, TEST_CONFIG);
+      assert.strictEqual(updated, 1);
+
+      const rawLines = readRawLines();
+      assert.ok(rawLines.includes(SCHEMA_INVALID_LINE), 'schema-invalid line must survive the rewrite (fails today)');
+      assert.ok(
+        rawLines.some((l) => l.includes('unparseable')),
+        'unparseable line must survive the rewrite (fails today)'
+      );
+
+      // Control: prove a rewrite actually happened — the rename must have landed.
+      const entries = readBuffer(TEST_CONFIG);
+      assert.strictEqual(
+        entries.find((e) => e.agent_id === 'annotate-target')?.agent_name,
+        'renamed',
+        'rename should have landed, proving a rewrite happened'
+      );
     });
   });
 
@@ -433,7 +719,38 @@ describe('Buffer Module', () => {
       );
 
       // The sibling temp file must not linger after the atomic rename.
-      assert.ok(!fs.existsSync(TEST_CONFIG.bufferPath + '.tmp'), 'No .tmp file should remain after rewrite');
+      // The actual temp name is unique (`<bufferPath>.<pid>.<uuid>.tmp`, see
+      // bufferTempPath), so a fixed-suffix existsSync check against
+      // `<bufferPath>.tmp` is vacuous — no code ever creates that exact
+      // name. Scan the sibling directory instead for anything matching the
+      // real naming scheme.
+      const dir = path.dirname(TEST_CONFIG.bufferPath);
+      const base = path.basename(TEST_CONFIG.bufferPath);
+      const leftoverTemps = fs.readdirSync(dir).filter(
+        (name) => name.startsWith(`${base}.`) && name.endsWith('.tmp'),
+      );
+      assert.deepStrictEqual(leftoverTemps, [], 'No unique-named .tmp file should remain after rewrite');
+    });
+  });
+
+  describe('bufferTempPath (issue a5ecf28a)', () => {
+    it('produces a unique path per call matching the documented naming scheme', () => {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+      const first = bufferTempPath(TEST_CONFIG.bufferPath);
+      const second = bufferTempPath(TEST_CONFIG.bufferPath);
+
+      assert.notStrictEqual(first, second, 'Two successive calls must differ');
+
+      for (const tmpPath of [first, second]) {
+        assert.ok(tmpPath.startsWith(`${TEST_CONFIG.bufferPath}.`), `${tmpPath} must be a sibling of the buffer path`);
+        assert.ok(tmpPath.endsWith('.tmp'), `${tmpPath} must end with .tmp`);
+        assert.ok(tmpPath.includes(String(process.pid)), `${tmpPath} must contain the process pid`);
+
+        const middle = tmpPath.slice(TEST_CONFIG.bufferPath.length + 1, -'.tmp'.length);
+        const [pidPart, uuidPart] = middle.split('.');
+        assert.strictEqual(pidPart, String(process.pid));
+        assert.ok(uuidPart && uuidRegex.test(uuidPart), `${uuidPart} must be a UUID`);
+      }
     });
   });
 

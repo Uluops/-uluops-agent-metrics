@@ -6,10 +6,7 @@ import * as fs from 'node:fs';
 import * as readline from 'node:readline';
 import type {
   AgentMetrics,
-  TokenMetrics,
-  ExecutionMetrics,
   RawAgentMessage,
-  ContentBlock,
   ExtractOptions,
 } from './types.js';
 import { isToolUseBlock } from './types.js';
@@ -67,7 +64,12 @@ function isValidAgentMessage(obj: unknown): obj is RawAgentMessage {
  *
  * @param agentId - The agent ID to extract metrics for
  * @param options - Extraction options
- * @returns AgentMetrics object or null if agent file not found
+ * @returns AgentMetrics object or null if the agent file could not be found
+ * @throws Error if the agent file WAS found but could not be read or contained
+ *   no valid messages/records (Claude: extractMetricsFromFile; Codex:
+ *   extractCodexMetricsFromFile) — null means "not there", a throw means
+ *   "there, but unusable"
+ * @see README.md § Core Extraction Functions
  */
 export async function extractAgentMetrics(
   agentId: string,
@@ -86,9 +88,9 @@ export async function extractAgentMetrics(
   return extractMetricsFromFile(location.filePath);
 }
 
-/** Safely coerce a value to a number, returning 0 for non-numeric values */
+/** Safely coerce a value to a number, returning 0 for non-numeric AND non-finite values */
 function safeNum(v: unknown): number {
-  return typeof v === 'number' && !isNaN(v) ? v : 0;
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
 /** Mutable accumulators used during JSONL parsing */
@@ -229,7 +231,7 @@ export async function extractMetricsFromFile(
     await fs.promises.access(filePath, fs.constants.R_OK);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Unable to read agent metrics file "${filePath}": ${message}`);
+    throw new Error(`Unable to read agent metrics file "${filePath}": ${message}`, { cause: error });
   }
 
   const fileStream = fs.createReadStream(filePath);
@@ -268,15 +270,26 @@ export async function extractMetricsFromFile(
  *
  * @param agentIds - Array of agent IDs to extract metrics for
  * @param options - Extraction options
- * @returns Map of agent ID to metrics (null if not found)
+ * @returns Map of agent ID to metrics. A null value means no metrics for
+ *   that id — either the agent file wasn't found, or extraction failed (in
+ *   which case a diagnostic naming the id and the failure reason is written
+ *   to stderr, mirroring commands/core.ts's compare command). One id's
+ *   failure never prevents the others from resolving.
+ * @see README.md § Core Extraction Functions
  */
 export async function extractMultipleAgentMetrics(
   agentIds: string[],
   options: ExtractOptions = {}
 ): Promise<Map<string, AgentMetrics | null>> {
-  const entries = await Promise.all(
+  const settled = await Promise.allSettled(
     agentIds.map(async (id) => [id, await extractAgentMetrics(id, options)] as const)
   );
+  const entries = settled.map((result, i) => {
+    if (result.status === 'fulfilled') return result.value;
+    const id = agentIds[i]!;
+    process.stderr.write(`Error reading agent ${id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}\n`);
+    return [id, null] as const;
+  });
   return new Map(entries);
 }
 

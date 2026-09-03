@@ -25,8 +25,10 @@
     "test": "tsc -p tsconfig.test.json && node --test 'dist/*.test.js' 'dist/**/*.test.js'",
     "test:coverage": "tsc -p tsconfig.test.json && node --test --experimental-test-coverage 'dist/*.test.js' 'dist/**/*.test.js'",
     "lint": "tsc --noEmit",
+    "check:readme-exports": "node scripts/check-readme-exports.mjs",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build && npm test"
+    "check:pack": "node scripts/check-pack.mjs",
+    "prepublishOnly": "npm test && npm run build && npm run check:pack"
   },
   "keywords": [
     "claude",

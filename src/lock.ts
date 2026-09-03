@@ -43,9 +43,17 @@ import * as path from 'node:path';
  *
  * @param lockPath - Path to the lock file
  * @param maxWaitMs - Maximum time to wait for lock acquisition
+ * @param deps - Test seam for injecting fs failures; not part of the public API
  * @returns true if lock acquired, false if timeout
  */
-export function acquireLock(lockPath: string, maxWaitMs: number = 5000): boolean {
+export function acquireLock(
+  lockPath: string,
+  maxWaitMs: number = 5000,
+  deps?: { writeFileSync?: typeof fs.writeFileSync; statSync?: typeof fs.statSync },
+): boolean {
+  const writeFileSync = deps?.writeFileSync ?? fs.writeFileSync;
+  const statSync = deps?.statSync ?? fs.statSync;
+
   // Ensure the lock's parent directory exists. Without this, a missing parent
   // makes writeFileSync throw ENOENT and statSync throw too, which reads as
   // "lock file was removed, retry" — spinning the full maxWaitMs for what is
@@ -54,7 +62,7 @@ export function acquireLock(lockPath: string, maxWaitMs: number = 5000): boolean
   try {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch {
-    // fall through — the create attempt below will report the real failure
+    // AUDIT-OK(no_empty_catch): fall through — the create attempt below will report the real failure
   }
 
   const startTime = Date.now();
@@ -63,20 +71,30 @@ export function acquireLock(lockPath: string, maxWaitMs: number = 5000): boolean
   while (Date.now() - startTime < maxWaitMs) {
     try {
       // Exclusive create - fails if file exists
-      fs.writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
       return true;
     } catch (err) {
-      // Check if lock is stale (holder process died)
-      try {
-        const stat = fs.statSync(lockPath);
-        // If lock is older than 30 seconds, assume it's stale
-        if (Date.now() - stat.mtimeMs > 30000) {
-          fs.unlinkSync(lockPath);
+      // Only EEXIST means "a lock file is actually there, check if it's
+      // stale". Any other write error (EACCES, EROFS, ENOENT on a parent
+      // that vanished after mkdirSync above, EMFILE, ...) is not about lock
+      // contention at all — retrying the stat/reclaim path against a path we
+      // can't write to just spins for the full maxWaitMs. Fall through to
+      // the same backoff-and-retry the contended-lock case uses; the retry
+      // will keep hitting the same write error until maxWaitMs elapses and
+      // acquireLock correctly returns false.
+      if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') {
+        // Check if lock is stale (holder process died)
+        try {
+          const stat = statSync(lockPath);
+          // If lock is older than 30 seconds, assume it's stale
+          if (Date.now() - stat.mtimeMs > 30000) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          // Lock file was removed, retry
           continue;
         }
-      } catch {
-        // Lock file was removed, retry
-        continue;
       }
 
       // Wait with exponential backoff (see function doc for busy-wait rationale)
@@ -100,15 +118,28 @@ export function acquireLock(lockPath: string, maxWaitMs: number = 5000): boolean
 export function releaseLock(lockPath: string): void {
   try {
     fs.unlinkSync(lockPath);
-  } catch {
-    // Lock already released or never acquired
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      // Lock already released or never acquired — normal double-release.
+      return;
+    }
+    // Anything else (e.g. EACCES on an unwritable parent dir) means the lock
+    // file is still there and we couldn't remove it. Never rethrow: this runs
+    // inside two `finally` blocks (withFileLock above, buffer.ts) where a
+    // thrown error would mask the real result. Report it so it isn't silent.
+    process.stderr.write(
+      `agent-metrics: failed to release lock ${lockPath}: ${code ?? String(err)}\n`,
+    );
   }
 }
 
 /**
  * Thrown by withFileLock when the lock cannot be acquired within the timeout.
- * Callers with best-effort semantics (GC, name write-back) catch and skip;
- * user-facing callers surface it.
+ * Callers with best-effort semantics (GC, name write-back) must catch
+ * LockAcquisitionError specifically (via `instanceof`) and skip it — a bare
+ * catch would also swallow unrelated failures (e.g. an unreadable buffer
+ * file) that a retry will never resolve. User-facing callers surface it.
  */
 export class LockAcquisitionError extends Error {
   constructor(lockPath: string, timeoutMs: number) {

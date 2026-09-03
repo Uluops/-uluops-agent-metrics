@@ -484,6 +484,18 @@ describe('Extractor Module', () => {
       );
     });
 
+    it('issue 96d880b1: wrapped error preserves the original as .cause (e.g. ENOENT)', async () => {
+      await assert.rejects(
+        () => extractMetricsFromFile('/nonexistent/path.jsonl'),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, 'Rejection must be an Error');
+          assert.ok(err.cause instanceof Error, 'err.cause must be the original filesystem error');
+          assert.strictEqual((err.cause as NodeJS.ErrnoException).code, 'ENOENT');
+          return true;
+        }
+      );
+    });
+
     it('should handle file with only whitespace', async () => {
       const filePath = path.join(TEST_DIR, 'whitespace.jsonl');
       fs.writeFileSync(filePath, '   \n\n   \n');
@@ -1003,6 +1015,80 @@ describe('Extractor Module', () => {
     });
   });
 
+  describe('issue b43ee42e: safeNum admits Infinity', () => {
+    // Fixture: a single assistant message whose usage carries input_tokens: 0
+    // (unique among the zero-valued fields so the string replace below only
+    // ever touches the real input_tokens key, since JSONL key order puts it
+    // first and .replace(string, string) only replaces the first match).
+    function buildFixture(replacementValue: string): string {
+      const baseTime = Date.now();
+      const userLine = JSON.stringify({
+        ...BASE_MESSAGE,
+        type: 'user',
+        message: { role: 'user', content: 'test' },
+        timestamp: new Date(baseTime).toISOString(),
+      });
+      const assistantMessage = JSON.stringify({
+        ...BASE_MESSAGE,
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: 'response',
+          model: 'claude-sonnet-4-5-20250929',
+          usage: {
+            input_tokens: 0,
+            output_tokens: 50,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+        timestamp: new Date(baseTime + 1000).toISOString(),
+      });
+
+      const patched = assistantMessage.replace('"input_tokens":0', `"input_tokens":${replacementValue}`);
+      assert.ok(
+        patched.includes(replacementValue),
+        `fixture must contain the replacement value ${replacementValue} or the test asserts nothing`
+      );
+      assert.notStrictEqual(patched, assistantMessage, 'replace must have found the input_tokens field');
+
+      return [userLine, patched].join('\n');
+    }
+
+    it('JSON.parse("1e999") -> Infinity in input_tokens no longer poisons total_effective', async () => {
+      const filePath = path.join(TEST_DIR, 'safenum-infinity-test.jsonl');
+      fs.writeFileSync(filePath, buildFixture('1e999'));
+
+      const metrics = await extractMetricsFromFile(filePath);
+
+      assert.strictEqual(metrics.tokens.input, 0, 'Infinity input_tokens should coerce to 0');
+      assert.ok(Number.isFinite(metrics.tokens.total_effective), 'total_effective must stay finite');
+      assert.strictEqual(metrics.tokens.total_effective, 50, 'total_effective should be output-only (0 + 0 + 50)');
+    });
+
+    it('control: -1e999 (-Infinity) also coerces to 0 and total stays finite', async () => {
+      const filePath = path.join(TEST_DIR, 'safenum-neg-infinity-test.jsonl');
+      fs.writeFileSync(filePath, buildFixture('-1e999'));
+
+      const metrics = await extractMetricsFromFile(filePath);
+
+      assert.strictEqual(metrics.tokens.input, 0, '-Infinity input_tokens should coerce to 0');
+      assert.ok(Number.isFinite(metrics.tokens.total_effective), 'total_effective must stay finite');
+      assert.strictEqual(metrics.tokens.total_effective, 50);
+    });
+
+    it('control: a large but finite value like 1e10 survives untouched', async () => {
+      const filePath = path.join(TEST_DIR, 'safenum-large-finite-test.jsonl');
+      fs.writeFileSync(filePath, buildFixture('1e10'));
+
+      const metrics = await extractMetricsFromFile(filePath);
+
+      assert.strictEqual(metrics.tokens.input, 10000000000, 'finite 1e10 should survive as-is');
+      assert.ok(Number.isFinite(metrics.tokens.total_effective));
+      assert.strictEqual(metrics.tokens.total_effective, 10000000000 + 50);
+    });
+  });
+
   describe('extractMultipleAgentMetrics', () => {
     it('should return metrics for valid IDs and null for invalid', async () => {
       // Create a valid agent file
@@ -1023,6 +1109,70 @@ describe('Extractor Module', () => {
       const results = await extractMultipleAgentMetrics([]);
       assert.ok(results instanceof Map);
       assert.strictEqual(results.size, 0);
+    });
+
+    it('issue 7962ddbc: one failing extraction does not reject the whole batch — it resolves to null and logs to stderr', async () => {
+      const codexHome = path.join(TEST_DIR, 'codex-home-multi');
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '06', '08');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      const goodId = '019eaa28-8e2d-73a2-840f-a00d6cc8795f';
+      const badId = '019eaa29-9f3e-74b3-951a-b11bd796e70a';
+
+      // Good: a valid rollout with a session_meta record (fixture shape
+      // matches codex-extractor.test.ts's record()/sessionMeta() helpers).
+      fs.writeFileSync(path.join(sessionsDir, `rollout-2026-06-08T16-14-05-${goodId}.jsonl`), [
+        JSON.stringify({
+          timestamp: '2026-06-08T16:14:05.000Z',
+          type: 'session_meta',
+          payload: {
+            id: goodId,
+            parent_thread_id: '019eaa27-f755-7cb2-84fa-bd1aa685d69e',
+            cwd: '/test/project',
+            cli_version: '0.137.0',
+            thread_source: 'subagent',
+            timestamp: '2026-06-08T16:14:05.000Z',
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-06-08T16:14:07.000Z',
+          type: 'event_msg',
+          payload: { type: 'task_complete', duration_ms: 2000 },
+        }),
+      ].join('\n'));
+
+      // Bad: lines are valid JSON, but there is no session_meta record —
+      // buildMetrics throws "No valid session records" (same shape as
+      // codex-extractor.test.ts's 96d880b1/0bac8c26 case), so
+      // extractCodexAgentMetrics -> extractCodexMetricsFromFile rejects.
+      fs.writeFileSync(path.join(sessionsDir, `rollout-2026-06-08T16-15-00-${badId}.jsonl`), [
+        JSON.stringify({
+          timestamp: '2026-06-08T16:15:00.000Z',
+          type: 'turn_context',
+          payload: { model: 'gpt-5.5', cwd: '/test/project' },
+        }),
+      ].join('\n'));
+
+      process.env.CODEX_HOME = codexHome;
+
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      let results: Map<string, unknown>;
+      try {
+        results = await extractMultipleAgentMetrics([goodId, badId]);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+
+      assert.strictEqual(results.size, 2);
+      assert.ok(results.get(goodId), 'the good id must still resolve to metrics');
+      assert.strictEqual(results.get(badId), null, 'the failing id must resolve to null, not reject the batch');
+      assert.ok(captured.includes(badId), `stderr should name the failing agent id, got:\n${captured}`);
     });
   });
 });

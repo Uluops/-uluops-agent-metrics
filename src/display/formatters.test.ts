@@ -23,7 +23,7 @@ import {
   type CompareItem,
   type LogDisplayStats,
 } from './formatters.js';
-import type { BufferEntry, BufferStats } from '../buffer.js';
+import { readBuffer, type BufferConfig, type BufferEntry, type BufferStats } from '../buffer.js';
 import type { AgentMetrics } from '../types.js';
 
 // Test configuration with isolated temp directory
@@ -176,6 +176,22 @@ describe('Display Formatters', () => {
 
       assert.ok(result.includes('abc1234'));
       assert.ok(!result.includes('unknown'));
+    });
+
+    it('issue 136d461e (display half): renders a sentinel for an unparseable captured_at instead of the literal "Invalid Date"', () => {
+      const entries = [createMockBufferEntry({ captured_at: 'not-a-date' })];
+      const result = formatBufferList(entries);
+
+      assert.ok(!result.includes('Invalid Date'), 'must not leak the raw JS Date.toString() literal');
+      assert.ok(result.includes('(invalid date)'), 'must render the explicit sentinel');
+    });
+
+    it('control: a valid captured_at still renders normally', () => {
+      const entries = [createMockBufferEntry({ captured_at: '2026-01-09T10:05:00.000Z' })];
+      const result = formatBufferList(entries);
+
+      assert.ok(!result.includes('(invalid date)'));
+      assert.ok(!result.includes('Invalid Date'));
     });
   });
 
@@ -349,6 +365,64 @@ describe('Display Formatters', () => {
       assert.ok(result.includes('File exists:       false'));
       assert.ok(!result.includes('File size:'));
       assert.ok(!result.includes('Line count:'));
+    });
+
+    it('issue f34180fe: suppresses Line count and prints Read failed when readError is set', () => {
+      const stats: LogDisplayStats = {
+        logPath: '/home/user/.claude/agent-metrics.log',
+        enabled: true,
+        minLevel: 'info',
+        maxFileSize: 10 * 1024 * 1024,
+        maxFiles: 5,
+        exists: true,
+        sizeBytes: 4096,
+        lineCount: 0,
+        rotatedFiles: 0,
+        oldestEntry: null,
+        newestEntry: null,
+        readError: 'EISDIR: illegal operation on a directory, read',
+      };
+      const result = formatLogStatus(stats);
+
+      assert.ok(result.includes('File exists:       true'));
+      assert.ok(result.includes('File size:         4.0 KB'), 'sizeBytes must still render — statSync succeeded');
+      assert.ok(!result.includes('Line count:'), 'Line count must be suppressed when the read failed');
+      assert.ok(result.includes('Read failed:       EISDIR'), 'Read failure must be reported in its place');
+    });
+  });
+
+  describe('issue 44bf69f1: formatters never crash on readBuffer output (validator-side fix, no dereference guards added here)', () => {
+    it('formatReport/formatBufferList/formatBufferSession over a real readBuffer() result do not throw and contain no NaN/undefined', () => {
+      const bufferPath = path.join(TEST_DIR, 'af7-real-buffer.jsonl');
+      const config: BufferConfig = { bufferPath, defaultTTL: 60 * 60 * 1000 };
+
+      const valid = createMockBufferEntry({ agent_id: 'af7-real-valid' });
+      // Missing model/duration_ms/duration_formatted/execution — the widened
+      // validator must drop this before it ever reaches a formatter.
+      const incompleteLine = JSON.stringify({
+        agent_id: 'af7-real-incomplete',
+        session_id: 's',
+        captured_at: '2026-01-01T00:00:00Z',
+        expires_at: '2099-01-01T00:00:00Z',
+        metrics: {
+          tokens: { input: 1, output: 1, cache_creation: 0, cache_read: 0, total_effective: 2 },
+        },
+      });
+
+      fs.writeFileSync(bufferPath, JSON.stringify(valid) + '\n' + incompleteLine + '\n');
+
+      const entries = readBuffer(config);
+      assert.strictEqual(entries.length, 1, 'The widened validator must have dropped the incomplete entry');
+
+      for (const format of [
+        () => formatReport(entries),
+        () => formatBufferList(entries),
+        () => formatBufferSession('session-123', entries),
+      ]) {
+        const result = format();
+        assert.ok(!/NaN/.test(result), `Output must not contain NaN:\n${result}`);
+        assert.ok(!/undefined/.test(result), `Output must not contain undefined:\n${result}`);
+      }
     });
   });
 });

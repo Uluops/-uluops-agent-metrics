@@ -77,7 +77,10 @@ export function formatBufferList(entries: BufferEntry[]): string {
       .padEnd(25);
     const duration = entry.metrics.duration_formatted.padEnd(8);
     const tokens = formatTokens(entry.metrics.tokens.total_effective).padEnd(8);
-    const captured = new Date(entry.captured_at).toLocaleString().slice(0, 20);
+    const capturedDate = new Date(entry.captured_at);
+    const captured = (
+      Number.isNaN(capturedDate.getTime()) ? '(invalid date)' : capturedDate.toLocaleString()
+    ).slice(0, 20);
 
     lines.push(
       `${entry.agent_id.padEnd(10)}  │  ${agentName}  │  ${duration}  │  ${tokens}  │  ${captured}`
@@ -392,6 +395,8 @@ export interface LogDisplayStats {
   rotatedFiles: number;
   oldestEntry: string | null;
   newestEntry: string | null;
+  /** Set when the file exists but its content could not be read (see LogStats.readError) */
+  readError?: string;
 }
 
 /**
@@ -415,7 +420,11 @@ export function formatLogStatus(stats: LogDisplayStats): string {
   lines.push(`File exists:       ${stats.exists}`);
   if (stats.exists) {
     lines.push(`File size:         ${(stats.sizeBytes / 1024).toFixed(1)} KB`);
-    lines.push(`Line count:        ${stats.lineCount}`);
+    if (stats.readError) {
+      lines.push(`Read failed:       ${stats.readError}`);
+    } else {
+      lines.push(`Line count:        ${stats.lineCount}`);
+    }
     lines.push(`Rotated files:     ${stats.rotatedFiles}`);
     if (stats.oldestEntry) {
       lines.push(`Oldest entry:      ${stats.oldestEntry}`);

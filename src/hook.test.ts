@@ -27,9 +27,30 @@ import {
   AGENT_ID_PATTERN,
 } from './hook.js';
 import { Readable } from 'node:stream';
+import { configureLogger, getLoggerConfig, readRecentLogs } from './logger.js';
 
 // Test configuration with isolated temp directory
 const TEST_DIR = path.join(os.tmpdir(), 'agent-metrics-hook-test-' + Date.now());
+
+/**
+ * Create a single-line JSONL transcript file with one user message, for
+ * exercising detectAgentName/detectRunToken. `prefix` only affects the
+ * generated filename (useful for distinguishing fixtures across describe
+ * blocks in test output); the emitted JSON content is identical regardless.
+ */
+function createTestTranscript(userMessage: string, prefix = 'transcript'): string {
+  const filePath = path.join(TEST_DIR, `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+  const content = JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: userMessage,
+    },
+    timestamp: new Date().toISOString(),
+  });
+  fs.writeFileSync(filePath, content + '\n');
+  return filePath;
+}
 
 describe('Hook Module', () => {
   before(() => {
@@ -177,21 +198,6 @@ describe('Hook Module', () => {
   });
 
   describe('detectAgentName', () => {
-    // Helper to create a test transcript file
-    function createTestTranscript(userMessage: string): string {
-      const filePath = path.join(TEST_DIR, `transcript-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
-      const content = JSON.stringify({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: userMessage,
-        },
-        timestamp: new Date().toISOString(),
-      });
-      fs.writeFileSync(filePath, content + '\n');
-      return filePath;
-    }
-
     it('should detect [agent:name] explicit tag', async () => {
       const filePath = createTestTranscript('[agent:code-validator] Validate code quality');
       const result = await detectAgentName(filePath);
@@ -346,6 +352,15 @@ describe('Hook Module', () => {
       assert.strictEqual(extractRunTag('[run:0a1] x'), '0a1'); // leading-digit 3-char
     });
 
+    it('should accept the exact 64-char maximum-length token, and reject 65 (inclusive/exclusive boundary)', () => {
+      // Total length is 1 (lead char) + {2,63} = 3..64. An over-long token is
+      // DROPPED (extractRunTag returns null), not truncated.
+      const token64 = 'a'.repeat(64);
+      const token65 = 'a'.repeat(65);
+      assert.strictEqual(extractRunTag(`[run:${token64}] x`), token64);
+      assert.strictEqual(extractRunTag(`[run:${token65}] x`), null);
+    });
+
     it('should lowercase the result', () => {
       assert.strictEqual(extractRunTag('[RUN:Proj-IR-3-A4F3] x'), 'proj-ir-3-a4f3');
     });
@@ -376,24 +391,13 @@ describe('Hook Module', () => {
   });
 
   describe('detectRunToken', () => {
-    function createTestTranscript(userMessage: string): string {
-      const filePath = path.join(TEST_DIR, `runtok-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
-      const content = JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: userMessage },
-        timestamp: new Date().toISOString(),
-      });
-      fs.writeFileSync(filePath, content + '\n');
-      return filePath;
-    }
-
     it('should detect a [run:token] tag in the first user message', async () => {
-      const filePath = createTestTranscript('[agent:executor] [run:proj-ir-4625f30d-01] go');
+      const filePath = createTestTranscript('[agent:executor] [run:proj-ir-4625f30d-01] go', 'runtok');
       assert.strictEqual(await detectRunToken(filePath), 'proj-ir-4625f30d-01');
     });
 
     it('should return null when no run tag is present', async () => {
-      const filePath = createTestTranscript('[agent:executor] no run tag');
+      const filePath = createTestTranscript('[agent:executor] no run tag', 'runtok');
       assert.strictEqual(await detectRunToken(filePath), null);
     });
 
@@ -461,6 +465,104 @@ describe('Hook Module', () => {
       const result = await getFirstUserMessageContent('~/non-existent-file.jsonl');
       assert.strictEqual(result, null);
     });
+
+    describe('issue 192c1f24: a read failure must be distinguishable from "no tag"', () => {
+      const TEST_LOG_PATH = path.join(TEST_DIR, 'af-read-failure.log');
+      let originalLoggerConfig: ReturnType<typeof getLoggerConfig>;
+
+      beforeEach(() => {
+        originalLoggerConfig = getLoggerConfig();
+        configureLogger({ logPath: TEST_LOG_PATH, enabled: true, minLevel: 'warn' });
+        try { fs.unlinkSync(TEST_LOG_PATH); } catch { /* no-op */ }
+      });
+
+      afterEach(() => {
+        configureLogger(originalLoggerConfig);
+      });
+
+      it('(a) a path that exists but errors on read returns null AND logs a warn entry naming the path', async () => {
+        // A directory in place of a file: existsSync is true, but the read
+        // itself fails (EISDIR) — the case this fix makes distinguishable
+        // from "no [agent:] tag in this transcript".
+        const dirPath = path.join(TEST_DIR, 'af-read-failure-dir.jsonl');
+        fs.mkdirSync(dirPath, { recursive: true });
+
+        const result = await getFirstUserMessageContent(dirPath);
+        assert.strictEqual(result, null);
+
+        const logLines = readRecentLogs(20);
+        const warnLine = logLines.find(line => /Failed to read transcript/.test(line));
+        assert.ok(warnLine, `Expected a "Failed to read transcript" warn entry, got:\n${logLines.join('\n')}`);
+        assert.ok(warnLine.includes(dirPath), `Warn entry should name the transcript path:\n${warnLine}`);
+      });
+
+      it('(b) NEGATIVE: a clean transcript with no [agent:] tag returns null and logs NO warn line', async () => {
+        const filePath = path.join(TEST_DIR, 'af-read-failure-clean.jsonl');
+        fs.writeFileSync(filePath, JSON.stringify({
+          type: 'assistant',
+          message: { role: 'assistant', content: 'no user message here' },
+        }) + '\n');
+
+        const result = await getFirstUserMessageContent(filePath);
+        assert.strictEqual(result, null);
+
+        const logLines = readRecentLogs(20);
+        assert.ok(
+          !logLines.some(line => /Failed to read transcript/.test(line)),
+          `A clean read must not log a read-failure warning, got:\n${logLines.join('\n')}`
+        );
+      });
+    });
+
+    describe('issue 20c11894: a well-formed JSONL `null` line must not be reported as malformed', () => {
+      const TEST_LOG_PATH = path.join(TEST_DIR, 'af-null-line.log');
+      let originalLoggerConfig: ReturnType<typeof getLoggerConfig>;
+
+      beforeEach(() => {
+        originalLoggerConfig = getLoggerConfig();
+        configureLogger({ logPath: TEST_LOG_PATH, enabled: true, minLevel: 'warn' });
+        try { fs.unlinkSync(TEST_LOG_PATH); } catch { /* no-op */ }
+      });
+
+      afterEach(() => {
+        configureLogger(originalLoggerConfig);
+      });
+
+      it('a leading literal `null` JSONL line is skipped without being counted as malformed', async () => {
+        const filePath = path.join(TEST_DIR, 'af-null-line.jsonl');
+        const validUserLine = JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'Valid message after a null line' },
+        });
+        fs.writeFileSync(filePath, 'null\n' + validUserLine + '\n');
+
+        const result = await getFirstUserMessageContent(filePath);
+        assert.strictEqual(result, 'Valid message after a null line');
+
+        const logLines = readRecentLogs(20);
+        assert.ok(
+          !logLines.some(line => /Skipped malformed transcript lines/.test(line)),
+          `A well-formed null line must not be reported as malformed, got:\n${logLines.join('\n')}`
+        );
+      });
+
+      it('control: a genuinely malformed (non-JSON) line still produces the malformed-line warning', async () => {
+        const filePath = path.join(TEST_DIR, 'af-still-malformed.jsonl');
+        const validUserLine = JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'Valid message after garbage' },
+        });
+        fs.writeFileSync(filePath, 'not valid json\n' + validUserLine + '\n');
+
+        const result = await getFirstUserMessageContent(filePath);
+        assert.strictEqual(result, 'Valid message after garbage');
+
+        const logLines = readRecentLogs(20);
+        const warnLine = logLines.find(line => /Skipped malformed transcript lines/.test(line));
+        assert.ok(warnLine, `Expected the malformed-line warning to still fire, got:\n${logLines.join('\n')}`);
+        assert.ok(warnLine.includes('"skipped_line_count":1'), `Expected skipped_line_count 1, got:\n${warnLine}`);
+      });
+    });
   });
 
   describe('readStdin', () => {
@@ -487,6 +589,94 @@ describe('Hook Module', () => {
       readable.push(null); // EOF immediately
       const result = await promise;
       assert.strictEqual(result, '{}', 'Empty stdin must resolve to {}');
+    });
+
+    it('issue a88c98d7: resolves with the partial payload once the hard deadline fires, instead of hanging on a stalled partial write', async () => {
+      const readable = new Readable({ read() {} });
+
+      // Small injected deadline (default parameter) so the test doesn't wait
+      // the real 5000ms ceiling. A partial chunk arrives and the stream never
+      // ends, never errors, and sends no further chunks — the idle timer
+      // would keep rescheduling on the first chunk and then just sit, since
+      // it only fires while `data === ''`.
+      const promise = readStdin(readable, 50);
+
+      readable.push('{"part":"stalled');
+      // Deliberately no readable.push(null) — the peer stalls mid-write.
+
+      const start = Date.now();
+      const result = await promise;
+      const elapsed = Date.now() - start;
+
+      assert.strictEqual(result, '{"part":"stalled', 'Should resolve with whatever partial data had accumulated');
+      assert.ok(elapsed < 1000, `Should resolve near the injected 50ms deadline, took ${elapsed}ms`);
+
+      readable.destroy();
+    });
+
+    describe('issue 338d6bba: stdin cap bounds memory, not just resolution latency', () => {
+      // Mirrors src/hook.ts's MAX_STDIN_BYTES (not exported).
+      const MAX_STDIN_BYTES = 1 * 1024 * 1024;
+      let originalWrite: typeof process.stderr.write;
+      let stderrChunks: string[];
+
+      beforeEach(() => {
+        stderrChunks = [];
+        originalWrite = process.stderr.write;
+        process.stderr.write = ((msg: string | Uint8Array) => {
+          stderrChunks.push(typeof msg === 'string' ? msg : msg.toString());
+          return true;
+        }) as typeof process.stderr.write;
+      });
+
+      afterEach(() => {
+        process.stderr.write = originalWrite;
+      });
+
+      it('emits the cap diagnostic exactly once even when ~20 more chunks arrive after the cap fires', async () => {
+        const readable = new Readable({ read() {} });
+        const promise = readStdin(readable);
+
+        // One chunk that alone exceeds the cap.
+        readable.push(Buffer.alloc(MAX_STDIN_BYTES + 1024, 'a'));
+        // ~20 more chunks after the cap has already fired — proxy for the
+        // unbounded accumulation: each one used to still run `data += chunk`
+        // and re-scan Buffer.byteLength(data) over an ever-growing string.
+        for (let i = 0; i < 20; i++) {
+          readable.push('more data after the cap fired');
+        }
+        readable.push(null);
+
+        const result = await promise;
+        assert.strictEqual(result, '{}', 'Cap must discard the payload');
+
+        const capMessages = stderrChunks.filter((c) => c.includes('stdin exceeded') && c.includes('discarding payload'));
+        assert.strictEqual(capMessages.length, 1, `Cap diagnostic must fire exactly once, got:\n${stderrChunks.join('')}`);
+
+        readable.destroy();
+      });
+
+      it('control: a payload just under the cap, split across several chunks, resolves intact with no cap diagnostic', async () => {
+        const readable = new Readable({ read() {} });
+        const promise = readStdin(readable);
+
+        const payloadSize = MAX_STDIN_BYTES - 1024;
+        const chunkSize = 100_000;
+        const value = 'x'.repeat(payloadSize - 2); // minus the JSON quotes
+        const fullPayload = `"${value}"`;
+
+        for (let offset = 0; offset < fullPayload.length; offset += chunkSize) {
+          readable.push(fullPayload.slice(offset, offset + chunkSize));
+        }
+        readable.push(null);
+
+        const result = await promise;
+        assert.strictEqual(result, fullPayload, 'Full payload under the cap must be returned intact');
+        assert.strictEqual(Buffer.byteLength(result), payloadSize);
+
+        const capMessages = stderrChunks.filter((c) => c.includes('stdin exceeded'));
+        assert.strictEqual(capMessages.length, 0, 'No cap diagnostic should fire for a payload under the cap');
+      });
     });
   });
 
@@ -582,6 +772,94 @@ describe('Hook Module', () => {
       assert.ok(mine, 'handleHook must have written a buffer entry for the agent');
       assert.strictEqual(mine.run_id, 'proj-ir-4625f30d-01', 'run token from the single read must be persisted as run_id');
       assert.strictEqual(mine.agent_name, 'executor', 'agent name from the single read must be persisted');
+    });
+
+    it('Fix 6: a 64-char run token round-trips intact into the persisted run_id', async () => {
+      const filePath = writeValidTranscript();
+      const token64 = 'a'.repeat(64);
+
+      const output = await handleHook(
+        { agent_transcript_path: filePath, agent_id: TEST_AGENT_ID, cwd: '/test/project' },
+        { readFirstMessage: async () => `[agent:executor] [run:${token64}] go` }
+      );
+
+      assert.strictEqual(output.decision, 'approve');
+      const { readBuffer } = await import('./buffer.js');
+      const mine = readBuffer().find((e) => e.agent_id === TEST_AGENT_ID);
+      assert.ok(mine, 'handleHook must have written a buffer entry for the agent');
+      assert.strictEqual(mine.run_id, token64, 'a 64-char run token must round-trip intact, not be truncated or dropped');
+    });
+
+    it('Fix 6: a 65-char run token is dropped (run_id undefined), not silently truncated', async () => {
+      const filePath = writeValidTranscript();
+      const token65 = 'a'.repeat(65);
+
+      const output = await handleHook(
+        { agent_transcript_path: filePath, agent_id: TEST_AGENT_ID, cwd: '/test/project' },
+        { readFirstMessage: async () => `[agent:executor] [run:${token65}] go` }
+      );
+
+      assert.strictEqual(output.decision, 'approve');
+      const { readBuffer } = await import('./buffer.js');
+      const mine = readBuffer().find((e) => e.agent_id === TEST_AGENT_ID);
+      assert.ok(mine, 'handleHook must have written a buffer entry for the agent');
+      assert.strictEqual(mine.run_id, undefined, 'an over-long run token must be dropped, not silently truncated to 64 chars');
+    });
+
+    it('issue c3234628: suppresses the capture-success summary when appendToBuffer returns null (lock contention)', async () => {
+      const filePath = writeValidTranscript();
+
+      const nullAppend = (() => null) as unknown as typeof import('./buffer.js').appendToBuffer;
+
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      let output;
+      try {
+        output = await handleHook(
+          { agent_transcript_path: filePath, agent_id: TEST_AGENT_ID, cwd: '/test/project' },
+          { appendToBuffer: nullAppend }
+        );
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+
+      assert.strictEqual(output.decision, 'approve', 'must still approve even when the capture is skipped');
+      assert.ok(
+        !/\[.*\] .* \| .* \| .*k tokens \| .*/.test(captured),
+        `capture-success summary line must not be emitted when appendToBuffer returns null, got: ${captured}`,
+      );
+    });
+
+    it('control: a non-null appendToBuffer return still emits the capture-success summary', async () => {
+      const filePath = writeValidTranscript();
+
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      let output;
+      try {
+        output = await handleHook(
+          { agent_transcript_path: filePath, agent_id: TEST_AGENT_ID, cwd: '/test/project' },
+        );
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+
+      assert.strictEqual(output.decision, 'approve');
+      assert.ok(
+        /\[.*\] .* \| .* \| .*k tokens \| .*/.test(captured),
+        `capture-success summary line should be emitted on a real (non-null) append, got: ${captured}`,
+      );
+      // afterEach above clears TEST_AGENT_ID from the real buffer this wrote to.
     });
   });
 });

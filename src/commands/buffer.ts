@@ -31,7 +31,8 @@ function parseSinceDuration(raw: string): Date | null {
   const value = parseInt(match[1], 10);
   const unit = match[2];
   const ms = unit === 'h' ? value * 60 * 60 * 1000 : value * 60 * 1000;
-  return new Date(Date.now() - ms);
+  const date = new Date(Date.now() - ms);
+  return isNaN(date.getTime()) ? null : date;
 }
 
 /**
@@ -88,7 +89,7 @@ export function registerBufferCommands(program: Command): void {
       if (options.since) {
         const parsed = parseSinceDuration(options.since);
         if (!parsed) {
-          console.error(`Invalid --since format: '${options.since}'. Use a number followed by 'm' (minutes) or 'h' (hours). Examples: 30m, 2h`);
+          console.error(`Invalid --since value: '${options.since}'. Use a number followed by 'm' (minutes) or 'h' (hours), and keep it within a representable date range. Examples: 30m, 2h`);
           process.exit(1);
         }
         sinceDate = parsed;
