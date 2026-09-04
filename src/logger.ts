@@ -86,15 +86,27 @@ function isLogLevel(value: unknown): value is LogLevel {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(LOG_LEVELS, value);
 }
 
+/** `maxFiles` must be a positive integer (at least 1 rotated file kept). */
+function isValidMaxFiles(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1;
+}
+
+/** `maxFileSize` must be a finite number strictly greater than 0 bytes. */
+function isValidMaxFileSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
 /**
  * Configure the logger with partial settings. Unspecified fields retain their current values.
  *
  * Without `exactOptionalPropertyTypes` in tsconfig, callers can pass `undefined`
- * or an invalid `minLevel` and still typecheck. Such keys are rejected here —
- * warned to stderr and the current value retained (never silently falling back
- * to DEFAULT_CONFIG, which would loosen a level a caller deliberately set) —
- * rather than thrown, since this module must never fail its host on bad input.
- * Sibling keys in the same call are unaffected and still applied.
+ * or an invalid `minLevel`/`maxFiles`/`maxFileSize` and still typecheck. Such
+ * keys are rejected here — warned to stderr and the current value retained
+ * (never silently falling back to DEFAULT_CONFIG, which would loosen a value
+ * a caller deliberately set) — rather than thrown, since this module must
+ * never fail its host on bad input. `maxFiles` must be an integer >= 1;
+ * `maxFileSize` must be a finite number > 0. Sibling keys in the same call
+ * are unaffected and still applied.
  *
  * @param config - Partial configuration to merge with current settings
  * @see README.md § Logger Functions
@@ -112,6 +124,16 @@ export function configureLogger(config: Partial<LoggerConfig>): void {
   if ('minLevel' in patch && !isLogLevel(patch.minLevel)) {
     process.stderr.write(`Warning: configureLogger ignored "minLevel": received ${JSON.stringify(patch.minLevel)}\n`);
     delete patch.minLevel;
+  }
+
+  if ('maxFiles' in patch && !isValidMaxFiles(patch.maxFiles)) {
+    process.stderr.write(`Warning: configureLogger ignored "maxFiles": received ${JSON.stringify(patch.maxFiles)}; expected an integer >= 1\n`);
+    delete patch.maxFiles;
+  }
+
+  if ('maxFileSize' in patch && !isValidMaxFileSize(patch.maxFileSize)) {
+    process.stderr.write(`Warning: configureLogger ignored "maxFileSize": received ${JSON.stringify(patch.maxFileSize)}; expected a finite number > 0\n`);
+    delete patch.maxFileSize;
   }
 
   currentConfig = { ...currentConfig, ...patch };
@@ -132,7 +154,10 @@ export function getLoggerConfig(): LoggerConfig {
 function ensureLogDir(): void {
   const dir = path.dirname(currentConfig.logPath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    // 0700: the log sits beside the buffer under ~/.claude, which Claude Code
+    // itself keeps at 0700 (spec 05). Applies at creation only; existing
+    // directories are never chmod'd.
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -207,7 +232,10 @@ function writeLog(level: LogLevel, message: string, data?: Record<string, unknow
     rotateIfNeeded();
 
     const entry = formatLogEntry(level, message, data);
-    fs.appendFileSync(currentConfig.logPath, entry, 'utf-8');
+    // 0600 at creation, defence-in-depth against incidental copying (spec 05);
+    // `mode` is ignored on an existing file, so an old log keeps its mode
+    // until rotation creates a fresh one.
+    fs.appendFileSync(currentConfig.logPath, entry, { encoding: 'utf-8', mode: 0o600 });
   } catch (err) {
     // Log to stderr as fallback
     process.stderr.write(`Failed to write to log file: ${err instanceof Error ? err.message : 'unknown error'}\n`);

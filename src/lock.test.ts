@@ -277,4 +277,37 @@ describe('Lock Module', () => {
       }
     });
   });
+
+  describe('state file permissions (spec 05, Option A: mode 0600 on write)', () => {
+    function skip(): boolean {
+      return process.getuid?.() === 0 || process.platform === 'win32';
+    }
+
+    it('3: a held lock file has mode 0600', () => {
+      if (skip()) return;
+      const lockPath = path.join(TEST_DIR, 'perm-test.lock');
+      const acquired = acquireLock(lockPath);
+      assert.strictEqual(acquired, true);
+      try {
+        const mode = fs.statSync(lockPath).mode & 0o777;
+        assert.strictEqual(mode, 0o600, `expected lock mode 0600, got ${mode.toString(8)}`);
+      } finally {
+        releaseLock(lockPath);
+      }
+    });
+
+    it('the lock directory is created with mode 0700', () => {
+      if (skip()) return;
+      const freshDir = path.join(TEST_DIR, 'perm-lock-subdir');
+      const lockPath = path.join(freshDir, 'x.lock');
+      const acquired = acquireLock(lockPath);
+      assert.strictEqual(acquired, true);
+      try {
+        const mode = fs.statSync(freshDir).mode & 0o777;
+        assert.strictEqual(mode, 0o700, `expected lock dir mode 0700, got ${mode.toString(8)}`);
+      } finally {
+        releaseLock(lockPath);
+      }
+    });
+  });
 });

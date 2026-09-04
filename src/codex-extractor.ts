@@ -31,7 +31,6 @@ interface CodexAccumulator {
   taskCompleteCount: number;
   singleTurnDurationMs: number | null;
   timeToFirstTokenMs: number | undefined;
-  finalMessage: string | undefined;
   messageCount: number;
   toolUseCount: number;
   toolBreakdown: Record<string, number>;
@@ -51,7 +50,6 @@ function createAccumulator(): CodexAccumulator {
     taskCompleteCount: 0,
     singleTurnDurationMs: null,
     timeToFirstTokenMs: undefined,
-    finalMessage: undefined,
     messageCount: 0,
     toolUseCount: 0,
     toolBreakdown: {},
@@ -144,10 +142,6 @@ function processEvent(acc: CodexAccumulator, payload: Record<string, unknown>): 
       if (typeof ttft === 'number' && Number.isFinite(ttft)) {
         acc.timeToFirstTokenMs = ttft;
       }
-    }
-    const finalMessage = safeString(payload.last_agent_message);
-    if (finalMessage) {
-      acc.finalMessage = finalMessage;
     }
     return;
   }
@@ -278,7 +272,6 @@ function buildMetrics(acc: CodexAccumulator, filePath: string): AgentMetrics {
       error_count: acc.errorCount,
       reasoning_record_count: acc.reasoningRecordCount,
     },
-    final_message: acc.finalMessage,
   };
 }
 
@@ -289,9 +282,9 @@ function buildMetrics(acc: CodexAccumulator, filePath: string): AgentMetrics {
  * an unrecognized shape (each skip is logged to stderr), and accumulates
  * token, tool, and timing metrics.
  *
- * Unlike {@link extractMetricsFromFile}, this does NOT pre-check the file
- * with `fs.access` — an unreadable path surfaces as the raw stream error
- * (e.g. ENOENT) rather than a wrapped, friendlier message.
+ * Pre-checks the file with `fs.access` (parity with {@link extractMetricsFromFile}),
+ * so a missing/unreadable path surfaces as a wrapped, friendlier message
+ * instead of the raw stream error (e.g. ENOENT) from the readline iterator.
  *
  * @param filePath - Path to the Codex rollout JSONL file
  * @returns AgentMetrics object
@@ -299,6 +292,13 @@ function buildMetrics(acc: CodexAccumulator, filePath: string): AgentMetrics {
  *   valid session_meta record (see buildMetrics)
  */
 export async function extractCodexMetricsFromFile(filePath: string): Promise<AgentMetrics> {
+  try {
+    await fs.promises.access(filePath, fs.constants.R_OK);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to read agent metrics file "${filePath}": ${message}`, { cause: error });
+  }
+
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
     input: fileStream,

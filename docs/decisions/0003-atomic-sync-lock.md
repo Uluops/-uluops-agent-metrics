@@ -106,6 +106,10 @@ if lock contention becomes a real bottleneck.
 ## References
 
 - `src/lock.ts` — `acquireLock`, `releaseLock`, `withFileLock`
-- `src/buffer.ts` — `appendToBuffer` (the lock's sole writer caller)
+- `src/buffer.ts` — `appendToBuffer` uses `acquireLock`/`releaseLock`
+  directly (not `withFileLock`); `removeWhere` and `annotateBufferEntries`
+  take the lock via `withFileLock`, and so do `cleanupExpired`,
+  `clearSession`, and `clearAgents` transitively, since all three are
+  implemented in terms of `removeWhere`
 - ADR-0002 — JSONL append-only buffer format
 - Issue `STR-INV/I` (`Sync locking classified INTENTIONAL — most documented decision in package`)

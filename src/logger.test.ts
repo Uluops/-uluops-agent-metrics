@@ -160,6 +160,104 @@ describe('Logger Module', () => {
         assert.strictEqual(getLoggerConfig().minLevel, 'error', '"constructor" must not pass as a valid LogLevel');
       });
     });
+
+    describe('tracker 0a05e8be: maxFiles / maxFileSize range validation', () => {
+      let originalWrite: typeof process.stderr.write;
+
+      beforeEach(() => {
+        originalWrite = process.stderr.write;
+        configureLogger({ logPath: TEST_LOG_PATH, minLevel: 'debug', enabled: true, maxFiles: 3, maxFileSize: 1024 });
+        process.stderr.write = (() => true) as typeof process.stderr.write;
+      });
+
+      afterEach(() => {
+        process.stderr.write = originalWrite;
+      });
+
+      it('rejects maxFiles: 0 and retains the current value', () => {
+        configureLogger({ maxFiles: 0 });
+
+        assert.strictEqual(getLoggerConfig().maxFiles, 3, 'maxFiles must not be set below 1');
+      });
+
+      it('warns to stderr naming the key and value when maxFiles is rejected', () => {
+        const written: string[] = [];
+        process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+
+        configureLogger({ maxFiles: 0 });
+
+        assert.ok(written.some(w => w.includes('maxFiles') && w.includes('0')), 'warning must name the key and the rejected value');
+      });
+
+      it('rejects maxFileSize: -1 and retains the current value', () => {
+        configureLogger({ maxFileSize: -1 });
+
+        assert.strictEqual(getLoggerConfig().maxFileSize, 1024, 'maxFileSize must not be set to a non-positive value');
+      });
+
+      it('warns to stderr naming the key and value when maxFileSize is rejected', () => {
+        const written: string[] = [];
+        process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+
+        configureLogger({ maxFileSize: -1 });
+
+        assert.ok(written.some(w => w.includes('maxFileSize') && w.includes('-1')), 'warning must name the key and the rejected value');
+      });
+
+      it('rejects a non-integer maxFiles', () => {
+        configureLogger({ maxFiles: 2.5 });
+
+        assert.strictEqual(getLoggerConfig().maxFiles, 3, 'maxFiles must be an integer');
+      });
+
+      it('rejects a non-finite maxFileSize', () => {
+        configureLogger({ maxFileSize: Infinity });
+
+        assert.strictEqual(getLoggerConfig().maxFileSize, 1024, 'maxFileSize must be finite');
+      });
+
+      it('control: a valid maxFiles still applies', () => {
+        configureLogger({ maxFiles: 7 });
+
+        assert.strictEqual(getLoggerConfig().maxFiles, 7);
+      });
+
+      it('control: a valid maxFileSize still applies', () => {
+        configureLogger({ maxFileSize: 2048 });
+
+        assert.strictEqual(getLoggerConfig().maxFileSize, 2048);
+      });
+
+      it('control: sibling keys in the same call still apply when maxFiles is rejected', () => {
+        configureLogger({ maxFiles: 0, minLevel: 'warn' });
+
+        const config = getLoggerConfig();
+        assert.strictEqual(config.minLevel, 'warn', 'sibling key must still apply');
+        assert.strictEqual(config.maxFiles, 3, 'rejected maxFiles must be retained, not defaulted');
+      });
+    });
+  });
+
+  describe('File permissions (spec 05 — logger half)', () => {
+    function skipPerms(): boolean {
+      return process.getuid?.() === 0 || process.platform === 'win32';
+    }
+
+    it('creates the log file 0600 and a fresh log directory 0700', (t) => {
+      if (skipPerms()) { t.skip('mode bits are not enforced for root / on Windows'); return; }
+      const freshDir = path.join(TEST_DIR, 'perm-' + Date.now(), 'nested');
+      const logPath = path.join(freshDir, 'perm.log');
+      try {
+        configureLogger({ logPath, enabled: true, minLevel: 'info' });
+        info('permissions probe');
+        const fileMode = fs.statSync(logPath).mode & 0o777;
+        assert.strictEqual(fileMode, 0o600, `expected log mode 0600, got ${fileMode.toString(8)}`);
+        const dirMode = fs.statSync(freshDir).mode & 0o777;
+        assert.strictEqual(dirMode, 0o700, `expected log dir mode 0700, got ${dirMode.toString(8)}`);
+      } finally {
+        configureLogger({ logPath: TEST_LOG_PATH, enabled: true, minLevel: 'debug' });
+      }
+    });
   });
 
   describe('getLoggerConfig', () => {

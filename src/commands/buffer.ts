@@ -19,6 +19,7 @@ import {
   formatBufferSession,
 } from '../display/formatters.js';
 import { LockAcquisitionError } from '../lock.js';
+import { filterByProjectPath } from './shared.js';
 import type { BufferFormat } from '../types.js';
 
 /**
@@ -126,12 +127,7 @@ export function registerBufferCommands(program: Command): void {
       });
 
       // Filter by project path (partial match)
-      if (options.project) {
-        const projectFilter = options.project.toLowerCase();
-        entries = entries.filter(e =>
-          e.project_path?.toLowerCase().includes(projectFilter)
-        );
-      }
+      entries = filterByProjectPath(entries, options.project);
 
       if (options.format === 'json') {
         console.log(JSON.stringify(entries, null, 2));

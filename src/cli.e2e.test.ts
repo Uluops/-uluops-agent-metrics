@@ -14,6 +14,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { appendToBuffer } from './buffer.js';
+import { createTestMetrics } from './test-utils.js';
 
 // This test file is compiled to dist/cli.e2e.test.js, alongside dist/cli.js —
 // resolve the sibling build output rather than assuming a fixed relative path
@@ -75,5 +77,31 @@ describe('CLI entry point (spawned binary)', () => {
     } finally {
       fs.chmodSync(projectsDir, 0o755);
     }
+  });
+
+  it('reconcile: a real spawned process exits 1 on shortfall (the in-process harness stubs process.exit, so only a spawn proves the real exit code — spec §7)', () => {
+    const homeDir = path.join(TEST_DIR, 'reconcile-e2e-home');
+    fs.mkdirSync(homeDir, { recursive: true });
+
+    const originalHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    try {
+      // Two rows captured under the run token; --expect 3 makes this a shortfall.
+      appendToBuffer(createTestMetrics(), { runId: 'e2e-run-token' });
+      appendToBuffer(createTestMetrics(), { runId: 'e2e-run-token' });
+    } finally {
+      process.env.HOME = originalHome;
+    }
+
+    const result = spawnSync(process.execPath, [CLI_PATH, 'reconcile', '--run', 'e2e-run-token', '--expect', '3', '-f', 'json'], {
+      env: { ...process.env, HOME: homeDir },
+      encoding: 'utf-8',
+    });
+
+    assert.strictEqual(result.status, 1, `Expected exit code 1 (shortfall) from the real process, got ${result.status}. stderr: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.status, 'shortfall');
+    assert.strictEqual(parsed.attributed, 2);
+    assert.ok(result.stderr.includes('SHORTFALL'), 'stderr must contain the SHORTFALL diagnostic');
   });
 });

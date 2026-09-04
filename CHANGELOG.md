@@ -7,6 +7,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-04
+
+### Added
+
+- **`reconcile --run <token> --expect <n>`** — moves ADR-0004's count-check
+  into this artifact. Reads the buffer for a single orchestrator run token,
+  compares the attributed agent count to a caller-supplied expectation,
+  prints the attributed set (`formatBufferList`, the same renderer
+  `buffer list` uses), and exits non-zero on shortfall. Options: `-p/--project`
+  (partial `project_path` match, parity with `buffer list -p`), `-f/--format`
+  (`text` default | `json`), `-a/--all` (include expired entries).
+  **Exit-code contract (deliberately asymmetric with the rest of this CLI):**
+  `0` on `attributed === expected` or `attributed > expected` (over-collection
+  is benign per ADR-0004 — bounded to one project, never mis-attribution —
+  and is reported on stderr, not treated as an error); `1` on
+  `attributed < expected` (shortfall — a `[run:]` tag was likely dropped);
+  `2` on a usage error (missing/malformed `--run` or `--expect`), deliberately
+  distinct from `1` so a caller reading only the exit code can tell "I
+  mistyped a flag" from "the run really lost an agent". `-f json` emits
+  exactly one object on stdout (`run_id`, `expected`, `attributed`,
+  `shortfall`, `status` ∈ `exact|over|shortfall`, `agents: [{agent_id,
+  agent_name}]`) — the diagnostic line goes to stderr in both formats, so
+  `-f json` stdout stays machine-parseable. `agents[]` carries only
+  `agent_id`/`agent_name`, never `run_id` and never a `-f tracker`-shaped
+  row — reconcile answers "who was attributed", not "what do I splice",
+  keeping the two payloads distinct so a consumer cannot accidentally splice
+  reconcile output into a tracker `save_run agents[]` call. Top-level command
+  (not `buffer reconcile`) — the semantic subject is the run, not the buffer.
+  No programmatic export; CLI-only, not re-exported from `index.ts`. See
+  `docs/decisions/0004-run-scoped-attribution.md` and
+  `01-reconcile-run-expect-command-spec-v0_1_0.md` (uluops-specifications).
+- **`filterByProjectPath`** (`src/commands/shared.ts`, internal — not
+  re-exported from `index.ts`). The `-p`/`--project` partial-match filter
+  previously hand-copied inline in `buffer list`, extracted so `buffer list -p`
+  and `reconcile -p` share one definition of what `-p` means instead of
+  independently drifting.
+
+- **Cross-process GC-throttle sidecar marker (`<bufferPath>.gc`).** A new
+  state file alongside the buffer/log/lock, written by `appendToBuffer`'s
+  opportunistic GC (internal — not re-exported from `index.ts`). It replaces
+  the module-scoped `lastGcAt` timestamp variable, which never throttled
+  anything on the SubagentStop hook path — the hook is a fresh Node process
+  per invocation, so every capture paid a full buffer read+parse under the
+  file lock before this change. The gate is now the marker's mtime, shared
+  across processes: open when the marker is absent or older than
+  `GC_INTERVAL_MS` (60s, unchanged), closed otherwise. An unreadable or
+  unwritable marker fails **open** (GC still runs) rather than blocking a
+  capture. `buffer clear` and friends do not yet know about this file (same
+  as the pre-existing `.lock` sibling); see proposal
+  `03-cross-process-gc-throttle-proposal-v0_1_0.md`.
+
+### Changed
+
+- **Buffer, GC-throttle marker, and lock state files are now created with
+  `0600` permissions; their parent directories with `0700`.** Previously
+  every write site used umask-derived defaults, so on a typical `umask 022`
+  machine these files were world-readable. `mode` only applies at file
+  creation (masked by umask, ignored on an existing file), so **existing
+  installations are not retroactively hardened by this change alone** — an
+  existing buffer self-heals to `0600` the next time it goes through the
+  atomic rewrite path (`removeWhere`/`annotateBufferEntries`, since
+  `rename(2)` carries the temp file's mode onto the destination). No
+  `chmod` was added to any write path — this is deliberately
+  defence-in-depth against incidental copying (backups, `tar`, sync
+  clients) on a single-user machine, not a claim that a vulnerability
+  existed. The log file (`~/.claude/agent-metrics.log`) and its directory
+  get the same treatment: `0600` at creation and `0700` for a freshly
+  created directory. An existing log keeps its mode until rotation creates
+  a fresh file; README § Persistence gives the one-line manual hardening
+  for an existing installation. See proposal
+  `05-state-file-permissions-proposal-v0_1_0.md`.
+
+### Removed
+
+- **`AgentMetrics.final_message`** (and the Codex-only extraction that
+  populated it — `last_agent_message` from the `task_complete` payload).
+  Dead weight: nothing in this package read the field (no formatter, no
+  tracker mapping, no README mention), and it stored the *model's own output
+  text* verbatim in the buffer — a body-of-work retention concern with no
+  offsetting consumer. Codex-path-only; the Claude extractor never had an
+  equivalent field. Tracker `5e378958`.
+
+### Fixed
+
+- **Batch `extract -f json|tracker` emitted a bare object instead of an array
+  when exactly one of several requested ids resolved.** The output shape
+  branched on how many ids *succeeded*; it now branches on how many were
+  *requested*, so `extract a b` is always an array and a scripted consumer's
+  `JSON.parse(stdout).map(...)` cannot break on a missing id. Found by
+  dx-validator (consumer-validate run, 2026-09-04).
+- **Documentation corrections from the 0.10.0 consumer-validate run.** README
+  Quick Start showed the `report --current` table under `agent-metrics list`;
+  both outputs are now shown under their own commands, with a note that agent
+  ids must be passed in full. `reconcile` was labelled "(v0.9.0)" in README and
+  ADR-0004; it ships in 0.10.0. README § Logger Functions now states
+  `configureLogger`'s validate-warn-retain behaviour. Unused `BufferEntry`
+  type import removed from `src/commands/shared.ts` (internal).
+- **`extractCodexMetricsFromFile` had no `fs.access` pre-check** — a
+  missing/unreadable rollout file surfaced as a raw `ENOENT` from the
+  readline stream iterator, a third error shape alongside
+  `extractMetricsFromFile`'s wrapped `Unable to read agent metrics file
+  "<path>": <message>` (with `.cause`) and `extractAgentMetrics`'s `null`
+  for "not found". Now pre-checks with `fs.promises.access(filePath,
+  fs.constants.R_OK)`, matching the Claude-path pattern exactly (wrapped
+  `Error` with the original filesystem error preserved as `.cause`).
+  Tracker `97656053`.
+- **`configureLogger` performed no range validation on `maxFiles` /
+  `maxFileSize`.** Extends the existing sanitise-and-retain pattern
+  (`minLevel`, `undefined`) added for issue `1f6d6ba2`: `maxFiles` must now
+  be an integer `>= 1` and `maxFileSize` a finite number `> 0`; a rejected
+  value is warned to stderr naming the key and the received value and the
+  **current** value is retained (never thrown, never silently defaulted to
+  `DEFAULT_CONFIG`, which would loosen a value a caller deliberately set).
+  Sibling keys in the same `configureLogger` call are unaffected. Tracker
+  `0a05e8be`.
+
+- **Opportunistic buffer GC was never throttled on the SubagentStop hook
+  path.** `appendToBuffer`'s GC gate was a module-level `lastGcAt`
+  timestamp, and the hook is a fresh process per invocation — so the "at
+  most once per `GC_INTERVAL_MS`" guarantee held only for long-lived
+  same-process callers (e.g. a CLI session) and never for the hook, which
+  is the dominant writer. Every SubagentStop firing paid an extra lock
+  acquisition plus a full buffer read+parse, which under parallel workflow
+  bursts is exactly the pathway that makes `appendToBuffer` fail closed and
+  silently drop a metric (`buffer.ts:265-277`). Replaced with the
+  cross-process `.gc` sidecar marker described above (see Added). Two
+  existing tests that encoded the old process-scoped assumption
+  (`buffer.test.ts`: the `issue 33fa21ff` "MUST run first" ordering
+  constraint, and "should run opportunistically on append", which
+  previously called `cleanupExpired()` directly rather than exercising the
+  in-append trigger) were reworked to match; a new cross-process regression
+  test spawns a second Node process appending to the same buffer within
+  `GC_INTERVAL_MS` and asserts it does not re-run GC.
+- **An unparseable `expires_at` made a buffer entry immortal.**
+  `isExpired` compared `new Date(entry.expires_at)` directly; an
+  unparseable value produces `Invalid Date`, and every relational
+  comparison against `Invalid Date` is `false`, so such a row was never
+  expired — returned by `readValidEntries`/`queryBuffer` forever, counted
+  in `BufferStats.validEntries` forever, and never removed by
+  `cleanupExpired`. `isExpired` now takes a `config` parameter and, when
+  `expires_at` does not parse, derives an expiry from
+  `captured_at + config.defaultTTL` via a new internal `entryExpiryMs`
+  helper (not re-exported from `index.ts`) — the same rule `appendToBuffer`
+  applies at write time. When `captured_at` is *also* unparseable, the row
+  is kept (no expiry can be established) and `cleanupExpired` emits one
+  stderr warning per affected row, naming the `agent_id` and which field
+  failed; `readValidEntries` stays silent (a process-scoped "already
+  warned" flag would degrade to "warn every time" on the hook path, the
+  same defect just fixed for GC's own throttle above). This package cannot
+  itself produce such a row (`appendToBuffer` ISO-formats both timestamps
+  unconditionally, and `toISOString()` throws on a non-finite `Date`), so
+  the affected population is a hand-edited buffer file, a foreign/future
+  writer, or corruption. See spec
+  `04-unparseable-expires-at-retention-spec-v0_1_0.md`.
+
 ## [0.9.0] - 2026-09-04
 
 ### Added
