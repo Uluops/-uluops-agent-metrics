@@ -175,13 +175,37 @@ function isValidBufferEntry(obj: unknown): obj is BufferEntry {
 function ensureBufferDir(config: BufferConfig = defaultConfig()): void {
   const dir = path.dirname(config.bufferPath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    // mode: 0o700 (spec 05) — owner-only. Masked by umask and ignored if the
+    // directory already exists; see fs.appendFileSync sites below for the
+    // same caveat on files.
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 
+/**
+ * Resolve an entry's expiry instant, or null when no time can be established.
+ *
+ * `expires_at` is the primary source. When it does not parse (a hand-edited
+ * buffer, a future/third-party writer, or corruption — see ADR-0002), expiry
+ * is derived from `captured_at + config.defaultTTL`, i.e. the same rule
+ * `appendToBuffer` applies at write time. This derivation depends on the
+ * READER's `defaultTTL`, not a property stored on the entry — a caller
+ * passing a different `defaultTTL` gets a different answer for the same row.
+ * When `captured_at` is also unparseable, null means "no expiry can be
+ * established, keep the row" (spec 04, Option C).
+ */
+function entryExpiryMs(entry: BufferEntry, config: BufferConfig): number | null {
+  const explicit = new Date(entry.expires_at).getTime();
+  if (!Number.isNaN(explicit)) return explicit;
+  const captured = new Date(entry.captured_at).getTime();
+  if (!Number.isNaN(captured)) return captured + config.defaultTTL;
+  return null;
+}
+
 /** Check if a buffer entry has expired relative to a given time */
-function isExpired(entry: BufferEntry, now: Date): boolean {
-  return new Date(entry.expires_at) <= now;
+function isExpired(entry: BufferEntry, now: Date, config: BufferConfig): boolean {
+  const expiry = entryExpiryMs(entry, config);
+  return expiry === null ? false : expiry <= now.getTime();
 }
 
 /**
@@ -192,21 +216,26 @@ function isExpired(entry: BufferEntry, now: Date): boolean {
  * runs, and TTL is 30 days). Callers needing immediate GC invoke cleanupExpired
  * directly.
  *
- * This "at most once per minute" guarantee holds only WITHIN one process: `lastGcAt`
- * is a module-level variable, and the SubagentStop hook (hook.ts `main()`, which calls
- * `appendToBuffer`) is a fresh process per invocation that exits when `main()`
- * completes (`process.exit` is called only on its failure path) — no in-memory state
- * survives between invocations (ADR-0002, Context) — so on the hook path this gate is
- * always open and
- * every SubagentStop firing pays the real per-call cost: a full buffer read + parse
- * under the file lock, with a rewrite only when `removeWhere` (below) finds at least
- * one expired entry (`removedCount > 0`). Long-lived callers in the same process (e.g.
- * a CLI session issuing multiple appends) do get the once-per-minute throttling as
- * written.
+ * The throttle is coordinated across processes via a sidecar marker file
+ * (`<bufferPath>.gc`, see {@link gcMarkerPath}), not an in-memory variable: the
+ * SubagentStop hook (`hook.ts` `main()`, which calls `appendToBuffer`) is a
+ * fresh process per invocation — `main()` does not call `process.exit` on its
+ * success path, only `main().catch(() => process.exit(1))` on failure
+ * (`hook.ts:550`) — so no in-memory state survives between invocations either
+ * way (ADR-0002:16-17). A module-level last-GC timestamp would therefore
+ * always read as its initial value on the hook path and the gate would
+ * always be open (this was the bug proposal 03 fixes). The marker's mtime
+ * is the shared clock: the gate is open when the marker is absent or older
+ * than GC_INTERVAL_MS, and a successful GC touches it. An unreadable or
+ * unwritable marker fails OPEN (treats the gate as open) rather than blocking
+ * GC — see the try/catch around the gate check and the marker touch below.
  */
 const GC_INTERVAL_MS = 60_000;
-/** Timestamp of the last successful opportunistic GC run (module-level, process-scoped). */
-let lastGcAt = 0;
+
+/** Path to the cross-process GC-throttle sidecar marker for a given buffer path. */
+function gcMarkerPath(bufferPath: string): string {
+  return `${bufferPath}.gc`;
+}
 
 /**
  * Options for {@link appendToBuffer}.
@@ -279,8 +308,11 @@ export function appendToBuffer(
   }
 
   try {
-    // Append to JSONL file
-    fs.appendFileSync(config.bufferPath, toJsonlLine(entry), 'utf-8');
+    // Append to JSONL file. mode: 0o600 (spec 05) applies at creation only —
+    // masked by umask and ignored if the file already exists; an existing
+    // buffer hardens at its next rewrite instead (see removeWhere /
+    // annotateBufferEntries below).
+    fs.appendFileSync(config.bufferPath, toJsonlLine(entry), { encoding: 'utf-8', mode: 0o600 });
 
     // Log the metrics capture
     logMetricsCapture(
@@ -310,18 +342,43 @@ export function appendToBuffer(
   // Opportunistic GC. Must run after the append lock is released —
   // cleanupExpired takes the same (non-reentrant) file lock. Best-effort:
   // a GC failure must never fail the capture that triggered it.
-  // Time-gated: skip if GC ran within GC_INTERVAL_MS to avoid full
-  // read+rewrite on every append during agent bursts. Callers needing
-  // immediate GC invoke cleanupExpired() directly.
-  // A LockAcquisitionError just means another process is GC'ing right now —
-  // the next append retries, so it's silently ignored. Any other failure
-  // (e.g. the buffer file itself is unreadable) is reported; it will not
-  // resolve on retry, and swallowing it silently would let corruption hide.
-  const nowMs = Date.now();
-  if (nowMs - lastGcAt >= GC_INTERVAL_MS) {
+  // Time-gated via the cross-process `.gc` sidecar marker (spec 03, Option
+  // A): skip if a successful GC touched the marker within GC_INTERVAL_MS, to
+  // avoid a full read+rewrite on every append during agent bursts. Callers
+  // needing immediate GC invoke cleanupExpired() directly.
+  const gcPath = gcMarkerPath(config.bufferPath);
+  let gcGateOpen: boolean;
+  try {
+    gcGateOpen = !fs.existsSync(gcPath) || Date.now() - fs.statSync(gcPath).mtimeMs >= GC_INTERVAL_MS;
+  } catch {
+    // AUDIT-OK(no_empty_catch): an unreadable/corrupt marker must fail OPEN
+    // (run GC) rather than silently block it forever — this degrades to the
+    // pre-throttle behaviour, the correct floor (proposal 03 §4, Option A).
+    gcGateOpen = true;
+  }
+
+  if (gcGateOpen) {
+    // A LockAcquisitionError just means another process is GC'ing right now —
+    // the next append retries, so it's silently ignored. Any other failure
+    // (e.g. the buffer file itself is unreadable) is reported; it will not
+    // resolve on retry, and swallowing it silently would let corruption hide.
     try {
       cleanupExpired(config);
-      lastGcAt = nowMs;
+      // Touch the marker only after a successful GC. Kept out of the catch
+      // above: a marker-write failure is not a GC failure and must not be
+      // reported as "buffer GC failed" — it only means the next append may
+      // GC again sooner than intended (fails open, never blocks a capture).
+      // Do NOT add a lock around the marker — two writers racing on it is a
+      // benign, self-correcting race (the file lock inside cleanupExpired
+      // already serializes the actual rewrite); adding one would put a
+      // second lock acquisition back on the path this option exists to
+      // remove.
+      try {
+        fs.writeFileSync(gcPath, String(Date.now()), { encoding: 'utf-8', mode: 0o600 });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`Warning: buffer GC marker write failed for ${gcPath}: ${msg}\n`);
+      }
     } catch (err) {
       if (!(err instanceof LockAcquisitionError)) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -413,7 +470,7 @@ function readBufferWithQuarantine(
  */
 export function readValidEntries(config: BufferConfig = defaultConfig()): BufferEntry[] {
   const now = new Date();
-  return readBuffer(config).filter((entry) => !isExpired(entry, now));
+  return readBuffer(config).filter((entry) => !isExpired(entry, now, config));
 }
 
 /**
@@ -563,6 +620,15 @@ export function getAllForSession(
  * file. Do NOT simplify to a shared temp name while the stale-reclaim
  * window exists.
  *
+ * Self-healing permissions (spec 05): both callers below write the temp file
+ * with `mode: 0o600` before renaming it over the buffer, and rename(2)
+ * carries the TEMP file's mode onto the destination. So a pre-existing
+ * `0644` buffer (created before this change, or by a foreign writer) becomes
+ * `0600` at its very next rewrite, with no explicit chmod anywhere. This only
+ * holds because both temp writes set the mode — dropping it from either one
+ * silently reverts a hardened buffer back to `0644` the next time that path
+ * runs.
+ *
  * @internal Not re-exported from index.ts — buffer.ts internal only.
  */
 export function bufferTempPath(bufferPath: string): string {
@@ -593,7 +659,9 @@ function removeWhere(
       // chose not to return.
       const tmpPath = bufferTempPath(config.bufferPath);
       const content = toJsonlContent(remaining) + quarantinedLines.map((l) => l + '\n').join('');
-      fs.writeFileSync(tmpPath, content, 'utf-8');
+      // mode: 0o600 (spec 05) — see bufferTempPath's doc comment for why
+      // this write (not the rename) is the enforcement point for hardening.
+      fs.writeFileSync(tmpPath, content, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmpPath, config.bufferPath);
     }
 
@@ -637,7 +705,9 @@ export function annotateBufferEntries(
       // read merely skipped.
       const tmpPath = bufferTempPath(config.bufferPath);
       const content = toJsonlContent(allEntries) + quarantinedLines.map((l) => l + '\n').join('');
-      fs.writeFileSync(tmpPath, content, 'utf-8');
+      // mode: 0o600 (spec 05) — see bufferTempPath's doc comment for why
+      // this write (not the rename) is the enforcement point for hardening.
+      fs.writeFileSync(tmpPath, content, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmpPath, config.bufferPath);
     }
 
@@ -648,12 +718,37 @@ export function annotateBufferEntries(
 /**
  * Remove expired entries from the buffer (garbage collection).
  *
+ * When an entry's `expires_at` does not parse, its expiry is derived from
+ * `captured_at + config.defaultTTL` (spec 04, Option C); when `captured_at`
+ * is also unparseable, the entry is kept. Either case emits one stderr
+ * warning per affected entry, naming the entry and which field failed —
+ * deliberately only from this retention path, not from readValidEntries: a
+ * process-scoped "already warned" flag would degrade to "warn every time" on
+ * the hook path (the same defect this GC throttle's sidecar marker exists to
+ * fix for GC itself — see proposal 03), so this simply accepts one warning
+ * per GC pass instead of trying to deduplicate across processes.
+ *
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Number of entries removed
  */
 export function cleanupExpired(config: BufferConfig = defaultConfig()): number {
   const now = new Date();
-  return removeWhere((entry) => !isExpired(entry, now), config);
+  return removeWhere((entry) => {
+    const explicitMs = new Date(entry.expires_at).getTime();
+    if (Number.isNaN(explicitMs)) {
+      const capturedMs = new Date(entry.captured_at).getTime();
+      if (Number.isNaN(capturedMs)) {
+        process.stderr.write(
+          `Warning: buffer entry ${entry.agent_id} has an unparseable expires_at and captured_at; keeping it (no expiry can be established)\n`
+        );
+      } else {
+        process.stderr.write(
+          `Warning: buffer entry ${entry.agent_id} has an unparseable expires_at; deriving expiry from captured_at + defaultTTL\n`
+        );
+      }
+    }
+    return !isExpired(entry, now, config);
+  }, config);
 }
 
 /**
@@ -705,7 +800,7 @@ export function getBufferStats(config: BufferConfig = defaultConfig()): BufferSt
     sessions.add(entry.session_id);
     agents.add(entry.agent_id);
 
-    if (!isExpired(entry, now)) {
+    if (!isExpired(entry, now, config)) {
       validCount++;
     }
 

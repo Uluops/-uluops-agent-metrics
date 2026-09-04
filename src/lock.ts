@@ -60,7 +60,9 @@ export function acquireLock(
   // actually an unwritable path. (Surfaced when withFileLock became
   // fail-closed; the old fail-open path masked it.)
   try {
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    // mode: 0o700 (spec 05) — owner-only. Masked by umask; ignored if the
+    // directory already exists.
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   } catch {
     // AUDIT-OK(no_empty_catch): fall through — the create attempt below will report the real failure
   }
@@ -70,8 +72,10 @@ export function acquireLock(
 
   while (Date.now() - startTime < maxWaitMs) {
     try {
-      // Exclusive create - fails if file exists
-      writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      // Exclusive create - fails if file exists. mode: 0o600 (spec 05) —
+      // masked by umask and irrelevant here anyway since 'wx' guarantees
+      // this call only ever creates the file, never reopens an existing one.
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx', mode: 0o600 });
       return true;
     } catch (err) {
       // Only EEXIST means "a lock file is actually there, check if it's

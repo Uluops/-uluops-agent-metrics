@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-process GC-throttle sidecar marker (`<bufferPath>.gc`).** A new
+  state file alongside the buffer/log/lock, written by `appendToBuffer`'s
+  opportunistic GC (internal — not re-exported from `index.ts`). It replaces
+  the module-scoped `lastGcAt` timestamp variable, which never throttled
+  anything on the SubagentStop hook path — the hook is a fresh Node process
+  per invocation, so every capture paid a full buffer read+parse under the
+  file lock before this change. The gate is now the marker's mtime, shared
+  across processes: open when the marker is absent or older than
+  `GC_INTERVAL_MS` (60s, unchanged), closed otherwise. An unreadable or
+  unwritable marker fails **open** (GC still runs) rather than blocking a
+  capture. `buffer clear` and friends do not yet know about this file (same
+  as the pre-existing `.lock` sibling); see proposal
+  `03-cross-process-gc-throttle-proposal-v0_1_0.md`.
+
+### Changed
+
+- **Buffer, GC-throttle marker, and lock state files are now created with
+  `0600` permissions; their parent directories with `0700`.** Previously
+  every write site used umask-derived defaults, so on a typical `umask 022`
+  machine these files were world-readable. `mode` only applies at file
+  creation (masked by umask, ignored on an existing file), so **existing
+  installations are not retroactively hardened by this change alone** — an
+  existing buffer self-heals to `0600` the next time it goes through the
+  atomic rewrite path (`removeWhere`/`annotateBufferEntries`, since
+  `rename(2)` carries the temp file's mode onto the destination). No
+  `chmod` was added to any write path — this is deliberately
+  defence-in-depth against incidental copying (backups, `tar`, sync
+  clients) on a single-user machine, not a claim that a vulnerability
+  existed. **Scope note:** the log file/directory (`src/logger.ts`) carry
+  the same two write sites per the proposal and are intentionally
+  **not** included in this change — `logger.ts` was owned by a parallel
+  workstream at the time this landed; see README § Persistence for the
+  manual `chmod` command covering all state files including the log. See
+  proposal `05-state-file-permissions-proposal-v0_1_0.md`.
+
+### Fixed
+
+- **Opportunistic buffer GC was never throttled on the SubagentStop hook
+  path.** `appendToBuffer`'s GC gate was a module-level `lastGcAt`
+  timestamp, and the hook is a fresh process per invocation — so the "at
+  most once per `GC_INTERVAL_MS`" guarantee held only for long-lived
+  same-process callers (e.g. a CLI session) and never for the hook, which
+  is the dominant writer. Every SubagentStop firing paid an extra lock
+  acquisition plus a full buffer read+parse, which under parallel workflow
+  bursts is exactly the pathway that makes `appendToBuffer` fail closed and
+  silently drop a metric (`buffer.ts:265-277`). Replaced with the
+  cross-process `.gc` sidecar marker described above (see Added). Two
+  existing tests that encoded the old process-scoped assumption
+  (`buffer.test.ts`: the `issue 33fa21ff` "MUST run first" ordering
+  constraint, and "should run opportunistically on append", which
+  previously called `cleanupExpired()` directly rather than exercising the
+  in-append trigger) were reworked to match; a new cross-process regression
+  test spawns a second Node process appending to the same buffer within
+  `GC_INTERVAL_MS` and asserts it does not re-run GC.
+- **An unparseable `expires_at` made a buffer entry immortal.**
+  `isExpired` compared `new Date(entry.expires_at)` directly; an
+  unparseable value produces `Invalid Date`, and every relational
+  comparison against `Invalid Date` is `false`, so such a row was never
+  expired — returned by `readValidEntries`/`queryBuffer` forever, counted
+  in `BufferStats.validEntries` forever, and never removed by
+  `cleanupExpired`. `isExpired` now takes a `config` parameter and, when
+  `expires_at` does not parse, derives an expiry from
+  `captured_at + config.defaultTTL` via a new internal `entryExpiryMs`
+  helper (not re-exported from `index.ts`) — the same rule `appendToBuffer`
+  applies at write time. When `captured_at` is *also* unparseable, the row
+  is kept (no expiry can be established) and `cleanupExpired` emits one
+  stderr warning per affected row, naming the `agent_id` and which field
+  failed; `readValidEntries` stays silent (a process-scoped "already
+  warned" flag would degrade to "warn every time" on the hook path, the
+  same defect just fixed for GC's own throttle above). This package cannot
+  itself produce such a row (`appendToBuffer` ISO-formats both timestamps
+  unconditionally, and `toISOString()` throws on a non-finite `Date`), so
+  the affected population is a hand-edited buffer file, a foreign/future
+  writer, or corruption. See spec
+  `04-unparseable-expires-at-retention-spec-v0_1_0.md`.
+
 ## [0.9.0] - 2026-09-04
 
 ### Added
