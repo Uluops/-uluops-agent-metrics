@@ -31,7 +31,13 @@ Buffer storage is an append-only JSONL file at
 (see ADR-0003). Reads stream the file line-by-line, parsing each
 entry independently. TTL is per-entry (`expires_at`); expired entries
 are filtered at read time and garbage-collected by an explicit
-`cleanupExpired()` call.
+`cleanupExpired()` call, and opportunistically on `appendToBuffer`,
+throttled to at most once per `GC_INTERVAL_MS` across processes via a
+`<bufferPath>.gc` sidecar marker file (`buffer.ts`). When an entry's
+`expires_at` does not parse, its expiry is derived from
+`captured_at + config.defaultTTL` instead; if `captured_at` is also
+unparseable, the entry is kept and a warning is emitted once per
+retention pass, from `cleanupExpired` only (`buffer.ts`).
 
 The format is treated as an internal contract between this package
 and itself, not a public interface. The `buffer.ts` module is the
@@ -46,7 +52,8 @@ zero-native-dep posture; (b) database file initialization in a
 short-lived hook context introduces a startup tax on every agent
 completion; (c) the access pattern — append-mostly with whole-file
 reads — does not benefit from indexes at the volumes we observe (a
-typical workflow session produces 5–30 entries, TTL'd at 24h).
+typical workflow session produces 5–30 entries, TTL'd at 30 days —
+the shipped default; see Consequences below).
 
 **D. JSON array file (read-modify-write).**
 Simpler in-memory model. Rejected because every write requires
@@ -74,16 +81,24 @@ durability guarantees with two orders of magnitude less code.
 
 **Accepted downsides:**
 
-- Whole-file reads scale linearly with entry count. At 24h TTL and
-  typical traffic this stays well under 10MB; at adversarial volumes
-  (a runaway workflow) it could degrade. The package logs buffer
-  size on each operation so this is observable.
+- Whole-file reads scale linearly with entry count. The shipped default
+  TTL is 30 days (aligned with Claude Code's transcript retention), not
+  the 24h originally assumed when this ADR was written; no production
+  buffer size has been measured against that default, so whether this
+  "stays well under 10MB" is unverified — at adversarial volumes (a
+  runaway workflow) it could degrade. This is **not** currently
+  observable from the package's own logs: `logBufferOperation`
+  (`logger.ts`) records only `{ agent_id, buffer_path }` per operation,
+  no size.
 - No transactional guarantees across multiple writes; each line is
   atomic, but a sequence of related entries (e.g. a workflow's set
   of agents) is not atomic as a group.
 - Corruption recovery is per-line: a malformed line is skipped with
-  a stderr warning, not surfaced as an error. The file is never
-  rewritten or truncated by reads.
+  a stderr warning, not surfaced as an error. Reads never rewrite or
+  truncate the file; the write paths (`removeWhere`,
+  `annotateBufferEntries`, both in `buffer.ts`) do read-then-rewrite
+  under lock, atomically via a temp-file + rename, and preserve any
+  quarantined (skipped) lines verbatim rather than dropping them.
 
 **Acquired benefits:**
 

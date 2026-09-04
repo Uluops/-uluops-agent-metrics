@@ -9,6 +9,7 @@ import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import {
   annotateBufferEntries,
   appendToBuffer,
@@ -65,6 +66,28 @@ function writeRawEntry(
   return entry;
 }
 
+/**
+ * Write a raw entry with fully caller-controlled captured_at/expires_at
+ * strings, bypassing writeRawEntry's unconditional ISO formatting. Needed for
+ * spec 04 (unparseable-timestamp retention): writeRawEntry cannot produce an
+ * unparseable expires_at or captured_at, since it ISO-formats both.
+ */
+function writeRawEntryWithTimestamps(
+  metrics: ReturnType<typeof createTestMetrics>,
+  timestamps: { captured_at: string; expires_at: string },
+  config: BufferConfig = TEST_CONFIG,
+): void {
+  const entry = {
+    agent_id: metrics.agent_id,
+    session_id: metrics.session_id,
+    captured_at: timestamps.captured_at,
+    end_time: metrics.end_time,
+    expires_at: timestamps.expires_at,
+    metrics,
+  };
+  fs.appendFileSync(config.bufferPath, JSON.stringify(entry) + '\n');
+}
+
 describe('Buffer Module', () => {
   before(() => {
     // Disable logging during tests to prevent log pollution
@@ -92,6 +115,17 @@ describe('Buffer Module', () => {
     } catch {
       // Lock file doesn't exist, that's fine
     }
+    try {
+      // spec 03: the cross-process GC-throttle sidecar marker. Without this,
+      // a marker touched by one test's opportunistic GC would leave the gate
+      // closed (fresh mtime) for every later test sharing TEST_CONFIG's
+      // bufferPath within GC_INTERVAL_MS, since the marker — unlike
+      // `lastGcAt` before it — persists on disk across appendToBuffer calls
+      // rather than resetting per process.
+      fs.unlinkSync(TEST_CONFIG.bufferPath + '.gc');
+    } catch {
+      // Marker doesn't exist, that's fine
+    }
   });
 
   describe('appendToBuffer', () => {
@@ -102,11 +136,10 @@ describe('Buffer Module', () => {
         return;
       }
 
-      // MUST run first: appendToBuffer's opportunistic GC is time-gated by a
-      // module-scoped `lastGcAt` (F1) that only opens once every 60s. This is
-      // the first appendToBuffer call in the file, so the gate is open (same
-      // constraint documented on "should run opportunistically on append" in
-      // the cleanupExpired describe block below).
+      // This test uses its own bufferPath (gcConfig), so its sidecar `.gc`
+      // throttle marker (spec 03, Option A) starts absent regardless of
+      // execution order — the gate is open on this test's first
+      // appendToBuffer call no matter what else has already run.
       const gcConfig: BufferConfig = {
         bufferPath: path.join(TEST_DIR, 'gc-failure-buffer.jsonl'),
         defaultTTL: TEST_TTL_MS,
@@ -557,20 +590,28 @@ describe('Buffer Module', () => {
       assert.strictEqual(remaining.length, 1);
     });
 
-    it('should run opportunistically on append (via explicit cleanupExpired)', () => {
+    it('should run opportunistically on append (via the append-triggered gate, not a direct cleanupExpired call)', () => {
       appendToBuffer(createTestMetrics({ agent_id: 'gc-valid-1' }), { config: TEST_CONFIG });
       writeRawEntry(createTestMetrics({ agent_id: 'gc-expired' }), -1000);
 
-      // F1: appendToBuffer now time-gates GC (60s interval, module-scoped).
-      // Within a test suite process the gate is typically closed by the time
-      // this test runs. Call cleanupExpired directly to exercise the GC logic
-      // without relying on the in-append trigger.
-      cleanupExpired(TEST_CONFIG);
+      // spec 03, Option A: appendToBuffer time-gates GC via a cross-process
+      // `<bufferPath>.gc` sidecar marker. Append #1 above (fresh TEST_CONFIG,
+      // no marker) opened the gate and touched it. Backdate it past
+      // GC_INTERVAL_MS so append #2's gate is open too, and assert the
+      // in-append trigger itself removed the expired entry — no direct
+      // cleanupExpired() call.
+      const gcPath = TEST_CONFIG.bufferPath + '.gc';
+      const staleTime = new Date(Date.now() - 61_000);
+      fs.utimesSync(gcPath, staleTime, staleTime);
+
       appendToBuffer(createTestMetrics({ agent_id: 'gc-valid-2' }), { config: TEST_CONFIG });
 
       const entries = readBuffer(TEST_CONFIG);
       assert.strictEqual(entries.length, 2);
-      assert.ok(!entries.some((e) => e.agent_id === 'gc-expired'), 'expired entry should be removed by cleanupExpired');
+      assert.ok(
+        !entries.some((e) => e.agent_id === 'gc-expired'),
+        'expired entry should be removed by the opportunistic append-triggered GC'
+      );
     });
   });
 
@@ -1259,6 +1300,301 @@ describe('Buffer Module', () => {
 
       // run_id IS present in the raw entry (surfaced by -f json, which serializes BufferEntry).
       assert.strictEqual(withRun[0].run_id, 'run-A');
+    });
+  });
+
+  describe('opportunistic GC throttle — cross-process sidecar (spec 03, Option A)', () => {
+    const GC_CONFIG: BufferConfig = {
+      bufferPath: path.join(TEST_DIR, 'gc-throttle-buffer.jsonl'),
+      defaultTTL: TEST_TTL_MS,
+    };
+
+    beforeEach(() => {
+      for (const suffix of ['', '.lock', '.gc']) {
+        try {
+          fs.unlinkSync(GC_CONFIG.bufferPath + suffix);
+        } catch {
+          // doesn't exist, fine
+        }
+      }
+    });
+
+    it('two sequential appendToBuffer calls within the interval produce exactly one GC run', () => {
+      // Append #1: no sidecar marker yet -> gate open -> GC runs (buffer is
+      // empty at this point, so it removes nothing but touches the marker).
+      appendToBuffer(createTestMetrics({ agent_id: 'interval-1' }), { config: GC_CONFIG });
+
+      // Written directly (bypassing the lock) between the two appends, like
+      // an entry that expired in the gap.
+      writeRawEntry(createTestMetrics({ agent_id: 'interval-expired' }), -1000, GC_CONFIG);
+
+      appendToBuffer(createTestMetrics({ agent_id: 'interval-2' }), { config: GC_CONFIG });
+
+      const entries = readBuffer(GC_CONFIG);
+      assert.ok(
+        entries.some((e) => e.agent_id === 'interval-expired'),
+        'expired entry written between the two appends must still be present — the gate must have stayed closed for append #2'
+      );
+    });
+
+    it('the gate reopens once the sidecar marker is older than GC_INTERVAL_MS', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'reopen-1' }), { config: GC_CONFIG });
+      writeRawEntry(createTestMetrics({ agent_id: 'reopen-expired' }), -1000, GC_CONFIG);
+
+      const gcPath = GC_CONFIG.bufferPath + '.gc';
+      const staleTime = new Date(Date.now() - 61_000);
+      fs.utimesSync(gcPath, staleTime, staleTime);
+
+      appendToBuffer(createTestMetrics({ agent_id: 'reopen-2' }), { config: GC_CONFIG });
+
+      const entries = readBuffer(GC_CONFIG);
+      assert.ok(
+        !entries.some((e) => e.agent_id === 'reopen-expired'),
+        'expired entry should be gone once the throttle gate reopens'
+      );
+    });
+  });
+
+  describe('opportunistic GC throttle — cross-process (finding-level, spec 03 §7)', () => {
+    it("a second process appending within GC_INTERVAL_MS of the first process's GC must not trigger a second GC", () => {
+      const config: BufferConfig = {
+        bufferPath: path.join(TEST_DIR, 'cross-process-buffer.jsonl'),
+        defaultTTL: TEST_TTL_MS,
+      };
+      for (const suffix of ['', '.lock', '.gc']) {
+        try {
+          fs.unlinkSync(config.bufferPath + suffix);
+        } catch {
+          // doesn't exist, fine
+        }
+      }
+
+      // Process 1 (this test process): first append opens the gate (no
+      // marker yet) and GC runs, touching the marker.
+      appendToBuffer(createTestMetrics({ agent_id: 'cross-1' }), { config });
+
+      // An expired row, as if it arrived between process 1's GC and process 2's append.
+      writeRawEntry(createTestMetrics({ agent_id: 'cross-expired' }), -1000, config);
+
+      // Process 2: a genuinely separate Node process, appending to the SAME
+      // buffer within GC_INTERVAL_MS of process 1's GC. Under the old
+      // module-scoped `lastGcAt`, this fresh process's own `lastGcAt` would
+      // be 0 and it would always GC — exactly the bug this proposal fixes.
+      const bufferModuleUrl = new URL('./buffer.js', import.meta.url).href;
+      const childMetrics = createTestMetrics({ agent_id: 'cross-2' });
+      const script =
+        `import(${JSON.stringify(bufferModuleUrl)}).then(({ appendToBuffer }) => { ` +
+        `appendToBuffer(${JSON.stringify(childMetrics)}, { config: ${JSON.stringify(config)} }); ` +
+        `});`;
+
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+      assert.strictEqual(
+        result.status,
+        0,
+        `child process failed (status ${result.status}): stderr=${result.stderr} error=${result.error}`
+      );
+
+      const entries = readBuffer(config);
+      assert.ok(
+        entries.some((e) => e.agent_id === 'cross-expired'),
+        "expired entry must survive the second process's append — the cross-process gate must have stayed closed"
+      );
+      assert.ok(
+        entries.some((e) => e.agent_id === 'cross-2'),
+        "the second process's own append must still have landed"
+      );
+    });
+  });
+
+  describe('retention: unparseable expires_at derives from captured_at + defaultTTL (spec 04, Option C)', () => {
+    const DERIVE_CONFIG: BufferConfig = {
+      bufferPath: path.join(TEST_DIR, 'derive-buffer.jsonl'),
+      defaultTTL: 30 * 24 * 60 * 60 * 1000, // 30d, matches the spec's fixtures
+    };
+
+    beforeEach(() => {
+      for (const suffix of ['', '.lock', '.gc']) {
+        try {
+          fs.unlinkSync(DERIVE_CONFIG.bufferPath + suffix);
+        } catch {
+          // doesn't exist, fine
+        }
+      }
+    });
+
+    function captureStderr(fn: () => number): { removedCount: number; captured: string[] } {
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      const captured: string[] = [];
+      process.stderr.write = ((chunk: string | Uint8Array) => {
+        captured.push(chunk.toString());
+        return true;
+      }) as typeof process.stderr.write;
+
+      let removedCount: number;
+      try {
+        removedCount = fn();
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+      return { removedCount, captured };
+    }
+
+    it('1: unparseable expires_at + captured_at 31d ago (30d TTL) — cleanupExpired removes it', () => {
+      const capturedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      writeRawEntryWithTimestamps(
+        createTestMetrics({ agent_id: 'derived-expired' }),
+        { captured_at: capturedAt, expires_at: 'not-a-date' },
+        DERIVE_CONFIG
+      );
+
+      const { removedCount } = captureStderr(() => cleanupExpired(DERIVE_CONFIG));
+      assert.strictEqual(removedCount, 1, 'row must be removed once expiry is derived from captured_at + defaultTTL');
+
+      const remaining = readBuffer(DERIVE_CONFIG);
+      assert.ok(!remaining.some((e) => e.agent_id === 'derived-expired'));
+    });
+
+    it('2: unparseable expires_at + captured_at 1h ago (30d TTL) — kept, returned by readValidEntries', () => {
+      const capturedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      writeRawEntryWithTimestamps(
+        createTestMetrics({ agent_id: 'derived-fresh' }),
+        { captured_at: capturedAt, expires_at: 'not-a-date' },
+        DERIVE_CONFIG
+      );
+
+      const valid = readValidEntries(DERIVE_CONFIG);
+      assert.ok(valid.some((e) => e.agent_id === 'derived-fresh'), 'row must still be readable as valid');
+    });
+
+    it('3: both fields unparseable — kept, exactly one stderr warning naming the row per cleanupExpired call', () => {
+      writeRawEntryWithTimestamps(
+        createTestMetrics({ agent_id: 'both-broken' }),
+        { captured_at: 'also-not-a-date', expires_at: 'not-a-date' },
+        DERIVE_CONFIG
+      );
+
+      const { removedCount, captured } = captureStderr(() => cleanupExpired(DERIVE_CONFIG));
+      assert.strictEqual(removedCount, 0, 'a row with no derivable expiry must be kept');
+
+      const warnings = captured.filter((l) => /both-broken/.test(l));
+      assert.strictEqual(
+        warnings.length,
+        1,
+        `expected exactly one warning naming both-broken, got:\n${captured.join('')}`
+      );
+
+      const remaining = readBuffer(DERIVE_CONFIG);
+      assert.ok(remaining.some((e) => e.agent_id === 'both-broken'), 'row must survive on disk');
+    });
+
+    it('4 (control): well-formed unexpired row is untouched, no warning', () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'wellformed-fresh' }), { config: DERIVE_CONFIG });
+
+      const { removedCount, captured } = captureStderr(() => cleanupExpired(DERIVE_CONFIG));
+      assert.strictEqual(removedCount, 0);
+      assert.strictEqual(captured.filter((l) => /wellformed-fresh/.test(l)).length, 0);
+
+      const remaining = readBuffer(DERIVE_CONFIG);
+      assert.ok(remaining.some((e) => e.agent_id === 'wellformed-fresh'));
+    });
+
+    it('5 (control): well-formed expired row is still removed and counted', () => {
+      writeRawEntry(createTestMetrics({ agent_id: 'wellformed-expired' }), -1000, DERIVE_CONFIG);
+
+      const { removedCount } = captureStderr(() => cleanupExpired(DERIVE_CONFIG));
+      assert.strictEqual(removedCount, 1);
+
+      const remaining = readBuffer(DERIVE_CONFIG);
+      assert.ok(!remaining.some((e) => e.agent_id === 'wellformed-expired'));
+    });
+
+    it('6: getBufferStats counts a derivable-expired row as expired, not valid', () => {
+      const capturedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      writeRawEntryWithTimestamps(
+        createTestMetrics({ agent_id: 'stats-derived-expired' }),
+        { captured_at: capturedAt, expires_at: 'not-a-date' },
+        DERIVE_CONFIG
+      );
+
+      const stats = getBufferStats(DERIVE_CONFIG);
+      assert.strictEqual(stats.totalEntries, 1);
+      assert.strictEqual(stats.validEntries, 0);
+      assert.strictEqual(stats.expiredEntries, 1);
+    });
+  });
+
+  describe('state file permissions (spec 05, Option A: mode 0600 on write, no chmod on write path)', () => {
+    function skip(): boolean {
+      return process.getuid?.() === 0 || process.platform === 'win32';
+    }
+
+    it('1: a fresh buffer file is created with mode 0600', () => {
+      if (skip()) return;
+      appendToBuffer(createTestMetrics({ agent_id: 'perm-fresh' }), { config: TEST_CONFIG });
+      const mode = fs.statSync(TEST_CONFIG.bufferPath).mode & 0o777;
+      assert.strictEqual(mode, 0o600, `expected buffer mode 0600, got ${mode.toString(8)}`);
+    });
+
+    it('bonus: the spec-03 GC sidecar marker file is also created with mode 0600', () => {
+      if (skip()) return;
+      appendToBuffer(createTestMetrics({ agent_id: 'perm-gc-marker' }), { config: TEST_CONFIG });
+      const gcPath = TEST_CONFIG.bufferPath + '.gc';
+      const mode = fs.statSync(gcPath).mode & 0o777;
+      assert.strictEqual(mode, 0o600, `expected .gc marker mode 0600, got ${mode.toString(8)}`);
+    });
+
+    it('5: the buffer directory is created with mode 0700', () => {
+      if (skip()) return;
+      const freshDir = path.join(TEST_DIR, 'perm-fresh-subdir');
+      const config: BufferConfig = {
+        bufferPath: path.join(freshDir, 'buffer.jsonl'),
+        defaultTTL: TEST_TTL_MS,
+      };
+      appendToBuffer(createTestMetrics({ agent_id: 'perm-dir' }), { config });
+      const mode = fs.statSync(freshDir).mode & 0o777;
+      assert.strictEqual(mode, 0o700, `expected buffer dir mode 0700, got ${mode.toString(8)}`);
+    });
+
+    it('4: rewrite self-heals hardening via cleanupExpired/removeWhere — a 0644 buffer becomes 0600 at its next GC rewrite', () => {
+      if (skip()) return;
+      appendToBuffer(createTestMetrics({ agent_id: 'perm-preexisting' }), { config: TEST_CONFIG });
+      fs.chmodSync(TEST_CONFIG.bufferPath, 0o644);
+      writeRawEntry(createTestMetrics({ agent_id: 'perm-to-expire' }), -1000);
+
+      const removed = cleanupExpired(TEST_CONFIG);
+      assert.strictEqual(removed, 1);
+
+      const mode = fs.statSync(TEST_CONFIG.bufferPath).mode & 0o777;
+      assert.strictEqual(mode, 0o600, `expected rewrite to self-heal to 0600, got ${mode.toString(8)}`);
+    });
+
+    it('4b: rewrite self-heals hardening via annotateBufferEntries too (both rewrite sites must set mode)', () => {
+      if (skip()) return;
+      appendToBuffer(createTestMetrics({ agent_id: 'perm-annotate-target' }), { config: TEST_CONFIG });
+      fs.chmodSync(TEST_CONFIG.bufferPath, 0o644);
+
+      const updated = annotateBufferEntries({ 'perm-annotate-target': 'renamed' }, TEST_CONFIG);
+      assert.strictEqual(updated, 1);
+
+      const mode = fs.statSync(TEST_CONFIG.bufferPath).mode & 0o777;
+      assert.strictEqual(mode, 0o600, `expected annotateBufferEntries rewrite to self-heal to 0600, got ${mode.toString(8)}`);
+    });
+
+    it('6 (control): appendFileSync without an explicit mode does not yield 0600 (proves the assertions above can fail)', () => {
+      if (skip()) return;
+      const p = path.join(TEST_DIR, 'perm-control-no-mode.txt');
+      try {
+        fs.unlinkSync(p);
+      } catch {
+        // doesn't exist, fine
+      }
+      fs.appendFileSync(p, 'x', 'utf-8');
+      const mode = fs.statSync(p).mode & 0o777;
+      assert.notStrictEqual(mode, 0o600, `expected a non-0600 mode without an explicit mode argument, got ${mode.toString(8)}`);
+      fs.unlinkSync(p);
     });
   });
 });
