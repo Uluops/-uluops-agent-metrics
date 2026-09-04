@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-04
+
 ### Added
 
+- **README "Development checks" subsection** documenting `lint` / `test` /
+  `check:pack` / `check:readme-exports`, the `prepublishOnly` ordering and why,
+  and that the SubagentStop hook runs the persistent copy at
+  `~/.claude/tools/agent-metrics/` (refreshed by `./install.sh`), not the global
+  npm install. "How It Works" gains the quarantine-preservation and never-fail
+  hook properties.
 - **`npm run check:pack`** (wired into `prepublishOnly`, run after `build`).
   Asserts, from `npm pack --dry-run --json`'s actual file list rather than
   from re-reading config, that the packed tarball contains no

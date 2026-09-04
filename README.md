@@ -58,6 +58,23 @@ npm run build
 npm link
 ```
 
+To refresh the SubagentStop hook from a source build, run `./install.sh` — the
+hook is wired to a persistent copy at `~/.claude/tools/agent-metrics/`, not to
+the global npm install, so `npm link` alone does not change what the hook runs.
+
+### Development checks
+
+```bash
+npm run lint                  # tsc --noEmit
+npm test                      # node:test suite (compiled via tsconfig.test.json)
+npm run check:pack            # the packed tarball contains no test artifacts (--control proves it can fail)
+npm run check:readme-exports  # README import blocks match src/index.ts exports (--control proves it can fail)
+```
+
+`prepublishOnly` runs `npm test && npm run build && npm run check:pack` in that
+order: the test compile writes into `dist/`, so `build` (which cleans first) must
+come last for the tarball to contain only the production emit.
+
 ### As a Project Dependency
 
 ```bash
@@ -727,6 +744,12 @@ The agent-metrics hook automatically captures metrics when any Task tool agent c
 5. Buffer entries expire after 30 days (configurable), aligned with Claude Code
    transcript retention; expired entries are garbage-collected opportunistically
    on the next append (v0.7.0 — expiry is enforced, not a passive label)
+6. Buffer lines the reader cannot validate (malformed JSON, or entries missing a
+   field every consumer dereferences) are skipped with a stderr warning naming
+   the missing field, and are preserved verbatim across GC and other rewrites
+   rather than deleted (v0.9.0). The hook itself never fails the parent session:
+   stdin is read under a hard deadline and a 1MB cap, and every capture-path
+   failure is logged rather than thrown.
 
 > **BREAKING (v0.7.0):** buffer-rewrite operations are fail-closed. When the
 > buffer lock cannot be acquired, `cleanupExpired`, `clearSession`,
