@@ -6,8 +6,6 @@
  * expose the same flag.
  */
 
-import type { BufferEntry } from '../buffer.js';
-
 /**
  * Filter buffer entries to those whose `project_path` partially matches
  * (case-insensitive substring match). Used by `buffer list -p` and

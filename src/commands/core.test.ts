@@ -313,6 +313,21 @@ describe('Core Commands', () => {
       assert.strictEqual(entries[0]?.agent_name, 'my-validator', 'Buffer entry should have written-back name');
     });
 
+    it('batch extract emits a JSON ARRAY whenever more than one id was requested, even if only one succeeded (dx-validator 2026-09-04)', async () => {
+      // The shape must be a function of the REQUEST, not of how many ids
+      // resolved: a scripted consumer doing JSON.parse(stdout).map(...) on
+      // `extract a b` must never get a bare object because `b` was missing.
+      const harness = createCommandTestHarness();
+      registerCoreCommands(harness.program);
+      await harness.program.parseAsync(['node', 'test', 'extract', 'abc1234', 'nosuchagent0', '-f', 'json']).catch(() => {});
+      const stdout = harness.stdout.join('\n');
+      const parsed = JSON.parse(stdout);
+      assert.ok(Array.isArray(parsed), `expected a JSON array for a two-id request, got ${typeof parsed}`);
+      assert.strictEqual(parsed.length, 1);
+      assert.strictEqual(parsed[0].agent_id ?? parsed[0].agentId ?? 'abc1234', 'abc1234');
+      assert.ok(harness.stderr.join('\n').includes('nosuchagent0'), 'the missing id must be named on stderr');
+    });
+
     it('F7: --agent-names a,b writes names back for a two-agent batch', async () => {
       appendToBuffer(createTestMetrics({ agent_id: 'abc1234', session_id: 'wb-session-2a' }), { config: TEST_BUFFER_CONFIG });
       appendToBuffer(createTestMetrics({ agent_id: 'def5678', session_id: 'wb-session-2b' }), { config: TEST_BUFFER_CONFIG });

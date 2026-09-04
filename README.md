@@ -115,9 +115,22 @@ agent-metrics status
 agent-metrics examples
 ```
 
-Output:
+Output of `agent-metrics list` (one line per agent file found on disk: id, duration, tokens, tool count, project):
 ```text
 Recent Agent Runs
+════════════════════════════════════════════════════════════════════════════════
+
+a559bfdfa3bae750a  │  6m 58s    │  430.4k   │  57 tools  │  ops-uluops-api
+aaf54a8ba5e6bf3be  │  3m 35s    │  181.9k   │  43 tools  │  ops-uluops-api
+
+Use `agent-metrics extract <agent-id>` for detailed metrics
+```
+
+Agent IDs must be passed in full as `list` prints them (17-18 hex characters); there is no prefix matching, and a shortened id fails with "Agent file not found".
+
+Output of `agent-metrics report --current` (buffered hook captures, with agent name, model and cache rate, grouped by project):
+```text
+Recent Agent Metrics
 ══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
 Agent ID            │  Agent Name              │  Model      │  Duration  │  Tokens   │  Cache  │  Tools
@@ -524,6 +537,8 @@ console.log(formatModelName('claude-sonnet-4-5-20250929', 12)); // "sonnet-4-5"
 
 ### Logger Functions
 
+`configureLogger` validates its input and never throws: an `undefined` value, an unknown `minLevel`, a `maxFiles` that is not an integer ≥ 1, or a `maxFileSize` that is not a finite number > 0 is rejected with a stderr warning naming the key and value, and the current setting is retained (never reset to the default). Sibling keys in the same call still apply.
+
 ```typescript
 import {
   configureLogger,
@@ -653,7 +668,7 @@ Run `agent-metrics examples` for a built-in usage guide covering common workflow
 | `extract <ids...> [-p project] [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
 | `compare <id...> [-p project] [--provider auto|claude|codex]` | Compare multiple agents side-by-side (`auto` resolves each id's harness independently, so a mixed Claude+Codex comparison works) |
 | `find <id> [-p project] [--provider auto|claude|codex]` | Find the file location for an agent |
-| `reconcile --run <token> --expect <n> [-p project] [-f format] [-a]` (v0.9.0) | Verify every agent expected in a `--run <token>` was attributed; moves ADR-0004's count-check into this artifact. Exit codes: `0` = attributed matches or exceeds expected (over-collection is benign, reported on stderr); `1` = shortfall (attributed < expected — likely a dropped `[run:]` tag); `2` = usage error (missing/malformed `--run` or `--expect`), deliberately distinct from `1` so a mistyped flag can't read as a passing check |
+| `reconcile --run <token> --expect <n> [-p project] [-f format] [-a]` (v0.10.0) | Verify every agent expected in a `--run <token>` was attributed; moves ADR-0004's count-check into this artifact. Exit codes: `0` = attributed matches or exceeds expected (over-collection is benign, reported on stderr); `1` = shortfall (attributed < expected — likely a dropped `[run:]` tag); `2` = usage error (missing/malformed `--run` or `--expect`), deliberately distinct from `1` so a mistyped flag can't read as a passing check |
 | `examples` | Show usage examples for common workflows |
 
 ### Buffer Commands
@@ -848,7 +863,7 @@ chars of the Claude Code session id — e.g. `my-project-ship-31948701-01`.
 *is* visible in `-f json`. See `docs/decisions/0004-run-scoped-attribution.md`
 for the full rationale.
 
-**Reconciling the count (v0.9.0):** a dropped `[run:]` tag silently drops that
+**Reconciling the count (v0.10.0):** a dropped `[run:]` tag silently drops that
 agent from a `--run` result — see ADR-0004's Consequences. The count-check
 that catches this is now in-artifact, not just a consumer-side obligation:
 

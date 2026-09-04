@@ -79,7 +79,7 @@ The orchestrator is a skill (an LLM), not code. It has no `randomUUID()` /
 `Date.now()` primitive it can call at mint time; it can only compose a token
 from context it already holds verbatim. The chosen scheme is:
 
-```
+```text
 <tracker_project>-<workflow-abbrev>-<session8>-<nonce4>
 e.g. agent-metrics-ir-31948701-01
 ```
@@ -122,7 +122,7 @@ therefore **mitigated, not impossible**: as strong as the consumer's discipline.
 This paragraph is retained per repo convention (the superseded position
 belongs in the ADR's history, not deleted) rather than rewritten in place.
 
-**Current state (v0.9.0): the count-check is now in this artifact.**
+**Current state (v0.10.0): the count-check is now in this artifact.**
 `agent-metrics reconcile --run <token> --expect <n>` (exit-nonzero on
 shortfall — see README § Run-Scoped Attribution and § Core Commands for the
 full exit-code contract) ships as of v0.9.0, discharging the caveat above:

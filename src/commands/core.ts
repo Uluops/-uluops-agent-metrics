@@ -164,16 +164,21 @@ export function registerCoreCommands(program: Command): void {
           }
         }
 
-        // For JSON/tracker formats, output array if batch, single object if solo
+        // For JSON/tracker formats: a single REQUESTED id emits one object, a
+        // batch request emits an array. The shape is a function of how many
+        // ids were asked for, never of how many resolved — a two-id request
+        // where one id was missing used to collapse to a bare object, which
+        // broke any consumer doing JSON.parse(stdout).map(...) only when a
+        // lookup happened to fail.
         if (format === 'json' || format === 'tracker') {
-          if (jsonResults.length === 1) {
-            console.log(JSON.stringify(jsonResults[0], null, 2));
-          } else if (jsonResults.length > 1) {
-            console.log(JSON.stringify(jsonResults, null, 2));
-          } else {
+          if (jsonResults.length === 0) {
             console.error('No agent metrics were extracted.');
             console.error('Run "agent-metrics list" to see available agent IDs.');
             process.exit(1);
+          } else if (agentIds.length === 1) {
+            console.log(JSON.stringify(jsonResults[0], null, 2));
+          } else {
+            console.log(JSON.stringify(jsonResults, null, 2));
           }
         }
       } catch (error) {

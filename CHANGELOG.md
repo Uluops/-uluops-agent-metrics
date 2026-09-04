@@ -91,6 +91,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Batch `extract -f json|tracker` emitted a bare object instead of an array
+  when exactly one of several requested ids resolved.** The output shape
+  branched on how many ids *succeeded*; it now branches on how many were
+  *requested*, so `extract a b` is always an array and a scripted consumer's
+  `JSON.parse(stdout).map(...)` cannot break on a missing id. Found by
+  dx-validator (consumer-validate run, 2026-09-04).
+- **Documentation corrections from the 0.10.0 consumer-validate run.** README
+  Quick Start showed the `report --current` table under `agent-metrics list`;
+  both outputs are now shown under their own commands, with a note that agent
+  ids must be passed in full. `reconcile` was labelled "(v0.9.0)" in README and
+  ADR-0004; it ships in 0.10.0. README § Logger Functions now states
+  `configureLogger`'s validate-warn-retain behaviour. Unused `BufferEntry`
+  type import removed from `src/commands/shared.ts` (internal).
 - **`extractCodexMetricsFromFile` had no `fs.access` pre-check** — a
   missing/unreadable rollout file surfaced as a raw `ENOENT` from the
   readline stream iterator, a third error shape alongside
