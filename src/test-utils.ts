@@ -162,7 +162,12 @@ export const BASE_MESSAGE = {
 
 export interface CommandTestHarness {
   program: Command;
+  /** Merged stdout+stderr, in call order — the historical, still-supported shape. */
   output: string[];
+  /** console.log calls only (stdout). Use when a test must assert a stream in isolation. */
+  stdout: string[];
+  /** console.error calls only (stderr). Use when a test must assert a stream in isolation. */
+  stderr: string[];
   exitCode: number | null;
   restore: () => void;
 }
@@ -180,6 +185,8 @@ export function createCommandTestHarness(): CommandTestHarness {
   const harness: CommandTestHarness = {
     program,
     output: [],
+    stdout: [],
+    stderr: [],
     exitCode: null,
     restore: () => {
       console.log = originalConsoleLog;
@@ -192,8 +199,16 @@ export function createCommandTestHarness(): CommandTestHarness {
   const originalConsoleError = console.error;
   const originalProcessExit = process.exit;
 
-  console.log = (...args: unknown[]) => harness.output.push(args.map(String).join(' '));
-  console.error = (...args: unknown[]) => harness.output.push(args.map(String).join(' '));
+  console.log = (...args: unknown[]) => {
+    const line = args.map(String).join(' ');
+    harness.output.push(line);
+    harness.stdout.push(line);
+  };
+  console.error = (...args: unknown[]) => {
+    const line = args.map(String).join(' ');
+    harness.output.push(line);
+    harness.stderr.push(line);
+  };
   (process.exit as unknown) = (code: number) => {
     harness.exitCode = code;
     throw new Error(`EXIT:${code}`);

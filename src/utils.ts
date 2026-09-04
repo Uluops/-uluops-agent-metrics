@@ -601,10 +601,21 @@ export function formatModelName(model: string | undefined | null, maxLength: num
 }
 
 /**
- * Parse an ISO 8601 timestamp string to Date
+ * Parse an ISO 8601 timestamp string to Date.
+ *
+ * Unvalidated: an unparseable `timestamp` yields an Invalid Date (a `Date`
+ * instance whose `getTime()` is `NaN`), the same as the underlying `new
+ * Date(...)` coercion — this function never throws. Callers that cannot
+ * tolerate an Invalid Date must check `isNaN(result.getTime())`, the same
+ * guard {@link calculateDuration} already applies before using either
+ * parsed timestamp. This mirrors the fail-closed posture used elsewhere in
+ * the package for Date coercion (e.g. `queryBuffer`'s `since`/`endTime*`
+ * filters), rather than returning `null`, since `parseTimestamp` is a
+ * public export (see index.ts) and changing its return type would be a
+ * breaking signature change for unknown external consumers.
  *
  * @param timestamp - ISO 8601 timestamp string
- * @returns Date object
+ * @returns Date object; Invalid Date (NaN `getTime()`) if unparseable
  */
 export function parseTimestamp(timestamp: string): Date {
   return new Date(timestamp);

@@ -112,17 +112,29 @@ iterations executed), not from the model's memory of what it launched. On
 When the expected count is derived independently, the two counts cannot be
 depressed by the same error, so under-collection is caught rather than silent.
 
-**Enforcement caveat (this package does not contain the count-check).** The
-count-check is a *consumer-side obligation*, currently discharged by the
+**Enforcement caveat, historical (until v0.9.0; superseded below).** The
+count-check was a *consumer-side obligation*, discharged by the
 `pdl-executor` skill (an LLM), not a primitive in this package. `agent-metrics`
-ships the mechanism the check relies on — the `--run` filter that returns the
-attributed set — but it does not itself enforce that a consumer runs the check,
-nor that the expected count is truly derived independently. The guarantee is
+shipped the mechanism the check relies on — the `--run` filter that returns the
+attributed set — but did not itself enforce that a consumer runs the check,
+nor that the expected count is truly derived independently. The guarantee was
 therefore **mitigated, not impossible**: as strong as the consumer's discipline.
-A future `agent-metrics reconcile --run <token> --expect <n>` (exit-nonzero on
-shortfall) would move the guarantee into this artifact and make it enforceable
-here; until then, "silent under-collection is prevented" is a claim about the
-consumer's behavior, not about this package in isolation.
+This paragraph is retained per repo convention (the superseded position
+belongs in the ADR's history, not deleted) rather than rewritten in place.
+
+**Current state (v0.9.0): the count-check is now in this artifact.**
+`agent-metrics reconcile --run <token> --expect <n>` (exit-nonzero on
+shortfall — see README § Run-Scoped Attribution and § Core Commands for the
+full exit-code contract) ships as of v0.9.0, discharging the caveat above:
+the comparison is now enforceable inside this package, not just prose in a
+skill file. One piece of the original guarantee remains structurally outside
+`agent-metrics` and always will: `reconcile` cannot verify that `--expect`
+was itself derived independently of the LLM (Σ fan-out entries × iterations
+from the parsed pipeline structure, never the model's memory of what it
+launched) — that provenance requirement is a `pdl-executor` obligation, not
+something a count comparison can enforce for its own caller. See
+`01-reconcile-run-expect-command-spec-v0_1_0.md` (uluops-specifications) for
+the full design and its §9 scope boundary.
 
 **Rejected uniqueness sources:**
 

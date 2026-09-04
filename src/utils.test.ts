@@ -196,6 +196,12 @@ describe('Utils Module', () => {
       assert.ok(date instanceof Date);
       assert.ok(!isNaN(date.getTime()));
     });
+
+    it('tracker 1917beff: an unparseable timestamp yields an Invalid Date, not a throw', () => {
+      const date = parseTimestamp('not-a-real-timestamp');
+      assert.ok(date instanceof Date, 'must still return a Date instance (documented, non-breaking contract)');
+      assert.ok(isNaN(date.getTime()), 'getTime() must be NaN for unparseable input — callers must check this');
+    });
   });
 
   describe('calculateDuration', () => {
@@ -214,6 +220,18 @@ describe('Utils Module', () => {
       const start = '2026-01-08T04:05:00.000Z';
       const end = '2026-01-08T04:00:00.000Z';
       assert.strictEqual(calculateDuration(start, end), -300000);
+    });
+
+    it('tracker 1917beff: an unparseable start timestamp is NaN-safe (returns 0, not NaN)', () => {
+      assert.strictEqual(calculateDuration('not-a-real-timestamp', '2026-01-08T04:00:00.000Z'), 0);
+    });
+
+    it('tracker 1917beff: an unparseable end timestamp is NaN-safe (returns 0, not NaN)', () => {
+      assert.strictEqual(calculateDuration('2026-01-08T04:00:00.000Z', 'not-a-real-timestamp'), 0);
+    });
+
+    it('control: a valid pair of timestamps is unaffected by the NaN guard', () => {
+      assert.strictEqual(calculateDuration('2026-01-08T04:00:00.000Z', '2026-01-08T04:01:00.000Z'), 60000);
     });
   });
 

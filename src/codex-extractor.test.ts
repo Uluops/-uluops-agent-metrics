@@ -156,7 +156,6 @@ describe('Codex extractor', () => {
     assert.strictEqual(metrics.model_provider, 'openai');
     assert.strictEqual(metrics.duration_ms, 10351);
     assert.strictEqual(metrics.time_to_first_token_ms, 9891);
-    assert.strictEqual(metrics.final_message, 'Subagent test complete.');
     assert.strictEqual(metrics.tokens.input, 12459);
     assert.strictEqual(metrics.tokens.cached_input, 4992);
     assert.strictEqual(metrics.tokens.output, 9);
@@ -182,7 +181,6 @@ describe('Codex extractor', () => {
 
     assert.strictEqual(metrics.duration_ms, 120000);
     assert.strictEqual(metrics.time_to_first_token_ms, 300);
-    assert.strictEqual(metrics.final_message, 'Second turn');
     assert.strictEqual(metrics.tokens.input, 300);
     assert.strictEqual(metrics.tokens.cached_input, 50);
     assert.strictEqual(metrics.tokens.output, 60);
@@ -190,6 +188,34 @@ describe('Codex extractor', () => {
     assert.strictEqual(metrics.tokens.total_raw, 370);
     // (300 − 50) + 60 = 310. reasoning_output (10) not added (§3.3).
     assert.strictEqual(metrics.tokens.total_effective, 310);
+  });
+
+  describe('extractCodexMetricsFromFile readability pre-check (tracker 97656053)', () => {
+    it('wraps a missing/unreadable file with package guidance instead of a raw stream error', async () => {
+      const filePath = path.join(TEST_DIR, 'missing-rollout.jsonl');
+
+      await assert.rejects(
+        () => extractCodexMetricsFromFile(filePath),
+        /Unable to read agent metrics file/
+      );
+    });
+
+    it('preserves the original error as .cause (e.g. ENOENT)', async () => {
+      await assert.rejects(
+        () => extractCodexMetricsFromFile('/nonexistent/path/rollout.jsonl'),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, 'Rejection must be an Error');
+          assert.ok(err.cause instanceof Error, 'err.cause must be the original filesystem error');
+          assert.strictEqual((err.cause as NodeJS.ErrnoException).code, 'ENOENT');
+          return true;
+        }
+      );
+    });
+
+    it('control: an existing, readable rollout file still extracts normally', async () => {
+      const metrics = await extractCodexMetricsFromFile(FILE_PATH);
+      assert.strictEqual(metrics.agent_id, AGENT_ID);
+    });
   });
 
   it('CXA-1: a token_count without total_token_usage does not zero prior token metrics', async () => {

@@ -653,6 +653,7 @@ Run `agent-metrics examples` for a built-in usage guide covering common workflow
 | `extract <ids...> [-p project] [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
 | `compare <id...> [-p project] [--provider auto|claude|codex]` | Compare multiple agents side-by-side (`auto` resolves each id's harness independently, so a mixed Claude+Codex comparison works) |
 | `find <id> [-p project] [--provider auto|claude|codex]` | Find the file location for an agent |
+| `reconcile --run <token> --expect <n> [-p project] [-f format] [-a]` (v0.9.0) | Verify every agent expected in a `--run <token>` was attributed; moves ADR-0004's count-check into this artifact. Exit codes: `0` = attributed matches or exceeds expected (over-collection is benign, reported on stderr); `1` = shortfall (attributed < expected — likely a dropped `[run:]` tag); `2` = usage error (missing/malformed `--run` or `--expect`), deliberately distinct from `1` so a mistyped flag can't read as a passing check |
 | `examples` | Show usage examples for common workflows |
 
 ### Buffer Commands
@@ -846,6 +847,21 @@ chars of the Claude Code session id — e.g. `my-project-ship-31948701-01`.
 `-f tracker` output (the tracker `save_run agents[]` schema is strict), but it
 *is* visible in `-f json`. See `docs/decisions/0004-run-scoped-attribution.md`
 for the full rationale.
+
+**Reconciling the count (v0.9.0):** a dropped `[run:]` tag silently drops that
+agent from a `--run` result — see ADR-0004's Consequences. The count-check
+that catches this is now in-artifact, not just a consumer-side obligation:
+
+```bash
+# Compare attributed agents to an independently-derived expected count
+agent-metrics reconcile --run my-project-ship-31948701-01 --expect 9 -f json
+```
+
+Exits `0` on an exact or over-collected match, `1` on a shortfall, `2` on a
+usage error (see the Core Commands table above for the full exit-code
+contract). The expected count's provenance is still the caller's
+responsibility — `reconcile` mechanizes the *comparison*, not the
+*expectation*; see `docs/decisions/0004-run-scoped-attribution.md`.
 
 ### Buffer Commands
 

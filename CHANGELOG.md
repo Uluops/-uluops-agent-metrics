@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`reconcile --run <token> --expect <n>`** — moves ADR-0004's count-check
+  into this artifact. Reads the buffer for a single orchestrator run token,
+  compares the attributed agent count to a caller-supplied expectation,
+  prints the attributed set (`formatBufferList`, the same renderer
+  `buffer list` uses), and exits non-zero on shortfall. Options: `-p/--project`
+  (partial `project_path` match, parity with `buffer list -p`), `-f/--format`
+  (`text` default | `json`), `-a/--all` (include expired entries).
+  **Exit-code contract (deliberately asymmetric with the rest of this CLI):**
+  `0` on `attributed === expected` or `attributed > expected` (over-collection
+  is benign per ADR-0004 — bounded to one project, never mis-attribution —
+  and is reported on stderr, not treated as an error); `1` on
+  `attributed < expected` (shortfall — a `[run:]` tag was likely dropped);
+  `2` on a usage error (missing/malformed `--run` or `--expect`), deliberately
+  distinct from `1` so a caller reading only the exit code can tell "I
+  mistyped a flag" from "the run really lost an agent". `-f json` emits
+  exactly one object on stdout (`run_id`, `expected`, `attributed`,
+  `shortfall`, `status` ∈ `exact|over|shortfall`, `agents: [{agent_id,
+  agent_name}]`) — the diagnostic line goes to stderr in both formats, so
+  `-f json` stdout stays machine-parseable. `agents[]` carries only
+  `agent_id`/`agent_name`, never `run_id` and never a `-f tracker`-shaped
+  row — reconcile answers "who was attributed", not "what do I splice",
+  keeping the two payloads distinct so a consumer cannot accidentally splice
+  reconcile output into a tracker `save_run agents[]` call. Top-level command
+  (not `buffer reconcile`) — the semantic subject is the run, not the buffer.
+  No programmatic export; CLI-only, not re-exported from `index.ts`. See
+  `docs/decisions/0004-run-scoped-attribution.md` and
+  `01-reconcile-run-expect-command-spec-v0_1_0.md` (uluops-specifications).
+- **`filterByProjectPath`** (`src/commands/shared.ts`, internal — not
+  re-exported from `index.ts`). The `-p`/`--project` partial-match filter
+  previously hand-copied inline in `buffer list`, extracted so `buffer list -p`
+  and `reconcile -p` share one definition of what `-p` means instead of
+  independently drifting.
+
+### Removed
+
+- **`AgentMetrics.final_message`** (and the Codex-only extraction that
+  populated it — `last_agent_message` from the `task_complete` payload).
+  Dead weight: nothing in this package read the field (no formatter, no
+  tracker mapping, no README mention), and it stored the *model's own output
+  text* verbatim in the buffer — a body-of-work retention concern with no
+  offsetting consumer. Codex-path-only; the Claude extractor never had an
+  equivalent field. Tracker `5e378958`.
+
+### Fixed
+
+- **`extractCodexMetricsFromFile` had no `fs.access` pre-check** — a
+  missing/unreadable rollout file surfaced as a raw `ENOENT` from the
+  readline stream iterator, a third error shape alongside
+  `extractMetricsFromFile`'s wrapped `Unable to read agent metrics file
+  "<path>": <message>` (with `.cause`) and `extractAgentMetrics`'s `null`
+  for "not found". Now pre-checks with `fs.promises.access(filePath,
+  fs.constants.R_OK)`, matching the Claude-path pattern exactly (wrapped
+  `Error` with the original filesystem error preserved as `.cause`).
+  Tracker `97656053`.
+- **`configureLogger` performed no range validation on `maxFiles` /
+  `maxFileSize`.** Extends the existing sanitise-and-retain pattern
+  (`minLevel`, `undefined`) added for issue `1f6d6ba2`: `maxFiles` must now
+  be an integer `>= 1` and `maxFileSize` a finite number `> 0`; a rejected
+  value is warned to stderr naming the key and the received value and the
+  **current** value is retained (never thrown, never silently defaulted to
+  `DEFAULT_CONFIG`, which would loosen a value a caller deliberately set).
+  Sibling keys in the same `configureLogger` call are unaffected. Tracker
+  `0a05e8be`.
+
 ## [0.9.0] - 2026-09-04
 
 ### Added

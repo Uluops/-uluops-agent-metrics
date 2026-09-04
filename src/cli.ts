@@ -13,6 +13,7 @@ import { registerCoreCommands } from './commands/core.js';
 import { registerStatusCommands } from './commands/status.js';
 import { registerBufferCommands } from './commands/buffer.js';
 import { registerLogCommands } from './commands/log.js';
+import { registerReconcileCommands } from './commands/reconcile.js';
 
 const require = createRequire(import.meta.url);
 const pkg: unknown = require('../package.json');
@@ -32,6 +33,7 @@ registerCoreCommands(program);
 registerStatusCommands(program);
 registerBufferCommands(program);
 registerLogCommands(program);
+registerReconcileCommands(program);
 
 // Examples command
 program
@@ -167,6 +169,11 @@ TRACKER INTEGRATION
 
   Alternative: use buffer session for all agents at once:
      $ agent-metrics buffer session <session-id> --format tracker
+
+  Run-scoped pipelines (v0.8.0+): tag agents with [run:<token>] and verify
+  none were dropped before collecting (v0.9.0):
+     $ agent-metrics reconcile --run my-project-ship-31948701-01 --expect 9 -f json
+     $ agent-metrics buffer list --run my-project-ship-31948701-01 -f tracker
 
 
 MAINTENANCE

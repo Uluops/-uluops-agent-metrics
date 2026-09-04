@@ -118,8 +118,6 @@ export interface AgentMetrics {
   // Execution
   /** Execution statistics */
   execution: ExecutionMetrics;
-  /** Final provider-reported message, when available */
-  final_message?: string;
 }
 
 /**
