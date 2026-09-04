@@ -109,6 +109,52 @@ describe('Lock Module', () => {
       releaseLock(lockPath);
       releaseLock(lockPath);
     });
+
+    it('issue 7bbc20b8: should not throw and should report on stderr when unlink fails for a non-ENOENT reason', () => {
+      if (process.getuid?.() === 0) {
+        return;
+      }
+      const restrictedDir = path.join(TEST_DIR, 'release-restricted');
+      fs.mkdirSync(restrictedDir, { recursive: true });
+      const lockPath = path.join(restrictedDir, 'held.lock');
+      fs.writeFileSync(lockPath, String(process.pid));
+      // Unlink needs write permission on the *parent* dir, not the file.
+      fs.chmodSync(restrictedDir, 0o500);
+
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        releaseLock(lockPath); // must not throw
+        assert.ok(captured.includes(lockPath), 'stderr diagnostic should name the lock path');
+        assert.ok(fs.existsSync(lockPath), 'file should still exist — unlink failed');
+      } finally {
+        process.stderr.write = originalWrite;
+        fs.chmodSync(restrictedDir, 0o700);
+        fs.unlinkSync(lockPath);
+      }
+    });
+
+    it('companion: releaseLock on a missing file emits nothing on stderr', () => {
+      const lockPath = path.join(TEST_DIR, 'release-missing-silent.lock');
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        releaseLock(lockPath);
+        assert.strictEqual(captured, '', 'ENOENT release must be fully silent');
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+    });
   });
 
   describe('withFileLock', () => {
@@ -170,6 +216,65 @@ describe('Lock Module', () => {
       const result = withFileLock(lockPath, 5000, () => 'ok');
       assert.strictEqual(result, 'ok');
       assert.ok(!fs.existsSync(lockPath), 'Lock released after');
+    });
+  });
+
+  describe('acquireLock — non-EEXIST write errors fall through to backoff (10b297e8)', () => {
+    it('should not spin retrying writeFileSync when the write error is not EEXIST', () => {
+      const lockPath = path.join(TEST_DIR, 'stale-check-spin.lock');
+      let writeAttempts = 0;
+      const deps = {
+        writeFileSync: (() => {
+          writeAttempts++;
+          const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }) as unknown as typeof fs.writeFileSync,
+        statSync: (() => {
+          const err = new Error('ENOENT: no such file or directory') as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }) as unknown as typeof fs.statSync,
+      };
+
+      const acquired = acquireLock(lockPath, 300, deps);
+      assert.strictEqual(acquired, false);
+      assert.ok(
+        writeAttempts <= 10,
+        `expected <= 10 write attempts on non-EEXIST error, got ${writeAttempts}`,
+      );
+    });
+
+    it('should still reclaim a stale lock when the write error is EEXIST (unchanged behavior)', () => {
+      if (process.getuid?.() === 0) {
+        return;
+      }
+      const lockPath = path.join(TEST_DIR, 'real-perm-denied.lock');
+      const acquired = acquireLock(lockPath, 1000);
+      assert.strictEqual(acquired, true);
+      releaseLock(lockPath);
+    });
+
+    it('should fall through to backoff and respect maxWaitMs on a real unwritable parent dir', () => {
+      if (process.getuid?.() === 0) {
+        return;
+      }
+      const restrictedDir = path.join(TEST_DIR, 'restricted-parent');
+      fs.mkdirSync(restrictedDir, { recursive: true });
+      const lockPath = path.join(restrictedDir, 'sub', 'x.lock');
+      // Pre-create the 'sub' dir so mkdirSync(recursive) in acquireLock succeeds,
+      // then chmod the parent read-only so writeFileSync fails with EACCES (not EEXIST).
+      fs.mkdirSync(path.join(restrictedDir, 'sub'), { recursive: true });
+      fs.chmodSync(path.join(restrictedDir, 'sub'), 0o500);
+      try {
+        const start = Date.now();
+        const acquired = acquireLock(lockPath, 300);
+        const elapsed = Date.now() - start;
+        assert.strictEqual(acquired, false);
+        assert.ok(elapsed < 2000, `expected acquireLock to respect maxWaitMs, took ${elapsed}ms`);
+      } finally {
+        fs.chmodSync(path.join(restrictedDir, 'sub'), 0o700);
+      }
     });
   });
 });

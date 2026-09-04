@@ -9,7 +9,7 @@ import assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { registerLogCommands } from './log.js';
+import { registerLogCommands, pollLogOnce, type PollState } from './log.js';
 import { configureLogger, info } from '../logger.js';
 import { createCommandTestHarness, type CommandTestHarness } from '../test-utils.js';
 
@@ -108,8 +108,84 @@ describe('Log Commands', () => {
       const messageLines = textOutput.split('\n').filter(l => l.includes('Test message'));
       assert.ok(messageLines.length <= 3, `Should show at most 3 lines, got ${messageLines.length}`);
     });
+  });
 
-    // Skip follow mode test as it requires SIGINT handling
+  describe('log tail --follow polling', () => {
+    it('T1: EISDIR from the underlying read leaves lastSize unchanged and emits one stderr diagnostic naming the errno', () => {
+      if (process.getuid?.() === 0) {
+        return;
+      }
+      const dirPath = path.join(TEST_DIR, 'follow-eisdir-target');
+      fs.mkdirSync(dirPath, { recursive: true });
+      // A fresh directory has a nonzero stat size on APFS/most filesystems,
+      // so starting lastSize at 0 forces pollLogOnce past the size check and
+      // into openSync/readSync, where reading a directory fails EISDIR.
+      const state: PollState = { lastSize: 0 };
+
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        pollLogOnce(dirPath, state, () => {
+          assert.fail('emit should not be called on a read failure');
+        });
+        assert.strictEqual(state.lastSize, 0, 'lastSize must be unchanged on a non-ENOENT error');
+        assert.ok(captured.includes('EISDIR'), `stderr diagnostic should name the errno, got: ${captured}`);
+      } finally {
+        process.stderr.write = originalWrite;
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      }
+    });
+
+    it('T2: file deleted mid-follow resets lastSize to 0', () => {
+      const logPath = path.join(TEST_DIR, 'follow-deleted.log');
+      fs.writeFileSync(logPath, 'line one\n');
+      const state: PollState = { lastSize: fs.statSync(logPath).size };
+      fs.unlinkSync(logPath);
+
+      pollLogOnce(logPath, state, () => {
+        assert.fail('emit should not be called when the file is gone');
+      });
+      assert.strictEqual(state.lastSize, 0, 'lastSize should reset to 0 on ENOENT');
+    });
+
+    it('T3: appended bytes emit only the newly appended lines and advance lastSize', () => {
+      const logPath = path.join(TEST_DIR, 'follow-append.log');
+      fs.writeFileSync(logPath, 'line one\n');
+      const state: PollState = { lastSize: fs.statSync(logPath).size };
+
+      fs.appendFileSync(logPath, 'line two\nline three\n');
+      const emitted: string[] = [];
+      pollLogOnce(logPath, state, (line) => emitted.push(line));
+
+      assert.deepStrictEqual(emitted, ['line two', 'line three']);
+      assert.strictEqual(state.lastSize, fs.statSync(logPath).size, 'lastSize should advance to the new file size');
+    });
+
+    it('T4: a healthy append emits no stderr output', () => {
+      const logPath = path.join(TEST_DIR, 'follow-healthy.log');
+      fs.writeFileSync(logPath, 'line one\n');
+      const state: PollState = { lastSize: fs.statSync(logPath).size };
+      fs.appendFileSync(logPath, 'line two\n');
+
+      const originalWrite = process.stderr.write;
+      let captured = '';
+      process.stderr.write = ((msg: string | Uint8Array) => {
+        captured += typeof msg === 'string' ? msg : msg.toString();
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        pollLogOnce(logPath, state, () => { /* consume line */ });
+        assert.strictEqual(captured, '', 'a healthy append must not write to stderr');
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+    });
   });
 
   describe('log clear command', () => {

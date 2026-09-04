@@ -7,6 +7,409 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-04
+
+### Added
+
+- **README "Development checks" subsection** documenting `lint` / `test` /
+  `check:pack` / `check:readme-exports`, the `prepublishOnly` ordering and why,
+  and that the SubagentStop hook runs the persistent copy at
+  `~/.claude/tools/agent-metrics/` (refreshed by `./install.sh`), not the global
+  npm install. "How It Works" gains the quarantine-preservation and never-fail
+  hook properties.
+- **`npm run check:pack`** (wired into `prepublishOnly`, run after `build`).
+  Asserts, from `npm pack --dry-run --json`'s actual file list rather than
+  from re-reading config, that the packed tarball contains no
+  `dist/**/*.test.*` or `dist/test-utils.*` paths and at least 40 files
+  (guards the check itself against a broken/empty extraction). The `files`
+  field's `!dist/**/*.test.*` / `!dist/test-utils.*` negations were, before
+  the `prepublishOnly` reorder below, the *sole* guard against shipping test
+  artifacts — a root `files` field makes npm ignore `.npmignore` entirely, so
+  that file was dead as a safety net. `scripts/check-pack.mjs` supports
+  `--control` (asserts the check WOULD have failed, for verifying the guard
+  isn't vacuous).
+- **`readStdin` hard deadline** (`readStdin` / `STDIN_HARD_DEADLINE_MS` — hook
+  internals, not re-exported from `index.ts`). A new (5000ms) ceiling,
+  independent of the existing idle timer, resolves `readStdin` with
+  whatever data has accumulated if a peer sends a partial chunk and then
+  stalls mid-stream (no further `data`, no `end`, no `error`). The idle timer
+  only ever fires while `data === ''`, so a stalled *partial* write previously
+  hung the hook indefinitely. `readStdin` gains an optional second parameter
+  (defaults to the constant) so tests can inject a short deadline instead of
+  waiting on the real one. The existing `data === ''` guard and the hook's
+  never-fail invariant (ADR-0002) are unchanged.
+- **`LogStats.readError` / `LogDisplayStats.readError`** (both optional;
+  `LogDisplayStats` is the CLI-display type, not re-exported from
+  `index.ts` — internal only).
+  Set when the log file exists but stat-ing or reading it failed (e.g.
+  `EACCES`, `EISDIR`, or the rotation race where `rotateLogFile` renames the
+  file between `existsSync` and `statSync`); `sizeBytes` is trustworthy only
+  when `statSync` itself succeeded. `agent-metrics log
+  status` now prints `Read failed: <message>` in place of `Line count:` when
+  this is set.
+- **Codex session scan skip/size diagnostics.** `findCodexAgentFile` /
+  `findRecentCodexAgentFiles` (and `findRecentAgentFiles`'s two parallel
+  scan loops) now thread a scan-observation accumulator: an unreadable
+  nested session subdirectory or an unreadable/malformed individual rollout
+  file (`readCodexSessionMeta`'s open/read/`JSON.parse` failures — internal,
+  not re-exported from `index.ts`) is
+  recorded and surfaced as **one** stderr diagnostic per scan naming the
+  count and the first failing path — these were previously swallowed
+  entirely, indistinguishable from "no matching file". A new
+  `CODEX_SCAN_NOTICE_THRESHOLD` (1000, also internal-only) additionally emits one "scanning N
+  Codex session files…" notice past that size; this is an observation, not
+  a cap — the scan remains exhaustive. The pre-existing "sessions directory
+  doesn't exist" case (Codex never used) stays silent by design.
+- **`log tail --follow` poll-failure diagnostic.** A non-`ENOENT` error
+  while polling the log file (e.g. `EISDIR`) now writes one deduplicated
+  stderr line naming the errno instead of failing silently; `ENOENT`
+  (rotation/deletion) still resets the tracked offset with no diagnostic.
+- **`AppendOptions` and `BufferQuery`** — the previously-anonymous options
+  types for `appendToBuffer` and `queryBuffer` are now named, exported
+  interfaces (re-exported from `index.ts`, documented in the README Types
+  block). Structural typing means this is non-breaking — no caller changes
+  required.
+- **README "Error signalling" subsection** (Programmatic Usage, after Core
+  Extraction Functions). Documents, function by function, which of
+  `extractAgentMetrics`, `extractMultipleAgentMetrics`,
+  `extractMetricsFromFile`, `findAgentFile`, `appendToBuffer`,
+  `cleanupExpired`/`clearSession`/`clearAgents`/`annotateBufferEntries`, and
+  `readBuffer` return `null`/`[]` for "not found" versus throw for "found
+  but unusable" — `extractAgentMetrics` in particular can do both, which the
+  existing example did not make clear. Matching `@throws` JSDoc added to
+  `extractAgentMetrics` (extractor.ts) and to `extractCodexMetricsFromFile`/
+  `extractCodexAgentMetrics` (codex-extractor.ts, internal — not re-exported
+  from `index.ts`), which previously had no JSDoc at all.
+
+### Changed
+
+- **`extractMultipleAgentMetrics` no longer rejects the whole batch when one
+  agent's extraction fails.** Switched `Promise.all` to `Promise.allSettled`;
+  a rejected extraction now resolves to `null` in the returned `Map` and
+  writes a stderr diagnostic naming the agent id and failure reason
+  (mirroring `commands/core.ts`'s `compare` command), instead of the entire
+  call rejecting and every other agent's already-successful extraction being
+  discarded with it. **Semantics-only change — the return type
+  (`Map<string, AgentMetrics | null>`) and signature are unchanged**, so
+  this is easy to miss on a diff: a caller relying on the old reject-on-any-
+  failure behavior (there were none in this codebase) would now see a
+  populated map with a `null` entry instead of a catchable rejection. The
+  original `Promise.all` was a deliberate parallel-reads performance choice
+  (commit `1687bfb`), not an oversight; this change preserves the
+  parallelism and only changes failure isolation.
+
+- **`isValidBufferEntry` (internal — not re-exported from `index.ts`) now
+  checks every field `formatters.ts` and
+  `entriesToTrackerFormat` dereference unconditionally** — `metrics.model`,
+  `metrics.duration_ms`, `metrics.duration_formatted`, and
+  `metrics.execution.tool_use_count`, in addition to the token fields it
+  already checked. A buffer line that passed the old, narrower check but was
+  missing one of these fields previously crashed `formatReport` /
+  `formatBufferList` / `formatBufferSession` on the first render; it is now
+  skipped on read, and the stderr warning names the specific missing field.
+  **Correction:** this entry previously said the row was "silently skipped
+  on read" without qualification, implying the row was gone. It was
+  skipped only from that one `readBuffer()` call's return value — until the
+  fix below, a subsequent GC/annotate rewrite (`cleanupExpired`,
+  `clearSession`, `clearAgents`, `annotateBufferEntries`) would rebuild the
+  buffer file from that same filtered output and permanently delete the
+  skipped line. Quarantined lines (internal — not re-exported from
+  `index.ts`) are now preserved verbatim across those rewrites; see the
+  entry below. Optional cross-harness fields (`end_time`, `agent_name`,
+  token extras like `cached_input`/`reasoning_output`) remain unchecked.
+- **Rewrite paths (`cleanupExpired` / `clearSession` / `clearAgents` /
+  `annotateBufferEntries`, via internal `removeWhere`) no longer permanently
+  delete quarantined buffer lines.** Both rewrite paths rebuilt the buffer
+  file from `readBuffer`'s already-filtered output, so any line
+  `isValidBufferEntry` rejected — or that failed to parse — was silently
+  dropped, uncounted, the next time a GC or annotate rewrite fired; this
+  contradicted the "the file is never rewritten or truncated by reads" claim
+  in `docs/decisions/0002-jsonl-buffer-format.md` (true of reads in
+  isolation, not of the write paths that read before rewriting). A new
+  internal `readBufferWithQuarantine` (buffer.ts, not re-exported from
+  `index.ts`) returns the raw text of every skipped line alongside the valid
+  entries; both rewrite sites now append it verbatim to the rewritten file
+  before the atomic rename. `readBuffer`'s public signature and behavior are
+  unchanged; `removedCount`/`updated` return semantics are unchanged (they
+  still count only valid entries).
+- **Wrapped read errors preserve the original as `.cause`.** Both
+  `extractMetricsFromFile`'s "Unable to read agent metrics file" wrapper and
+  `extractCodexMetricsFromFile`'s (internal — not re-exported from
+  `index.ts`) "No valid Codex session records found"
+  error (which now also names the file path) keep the underlying error
+  (e.g. `ENOENT`) reachable via `err.cause` / include the path in the
+  message, instead of discarding it. Wrapper message text is unchanged, so
+  existing regex-matching callers are unaffected.
+- **`queryBuffer({ since })` now fails closed on an unparseable
+  `captured_at`**, matching the existing `endTimeAfter`/`endTimeBefore`
+  posture: `new Date(entry.captured_at) < query.since` is always `false`
+  when `captured_at` doesn't parse (`Invalid Date` comparisons are always
+  `false`), so such a row previously passed every `since` window
+  unconditionally instead of being excluded. QUERY-SCOPED — `readBuffer`
+  and `isValidBufferEntry` never reject a row for this; only this filtered
+  view changes.
+- **`getAllForSession`'s sort comparator is now NaN-safe.** It compared
+  `new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime()`
+  directly; an unparseable `captured_at` on either side produces `NaN`,
+  which `Array.prototype.sort` handles inconsistently (engine-dependent,
+  and not guaranteed to place the row anywhere predictable). Entries with an
+  unparseable `captured_at` now sort last, deterministically.
+- **`formatBufferList` (display/formatters.ts) no longer renders the raw
+  `Invalid Date` string** for an unparseable `captured_at` — it now renders
+  an explicit `(invalid date)` sentinel.
+- **De-duplicated the unique-temp-name construction in `buffer.ts`.**
+  `removeWhere` and `annotateBufferEntries` each built
+  `` `${config.bufferPath}.${process.pid}.${randomUUID()}.tmp` `` inline; both
+  now call a new internal `bufferTempPath(bufferPath)` (not re-exported from
+  `index.ts`, but exported from `buffer.ts` and `/** @internal */`-marked so
+  it can be imported directly in tests), which also now carries the
+  crash-atomicity and stale-reclaim-collision rationale comment that used to
+  live only at the `removeWhere` call site. No behavior change — same path
+  shape, same two call sites.
+
+### Fixed
+
+- **Codex `session_meta` was never read on real rollouts.** `readCodexSessionMeta`
+  (internal) read a fixed 8192 bytes and parsed the first line from that, but
+  a real `session_meta` line is ~20KB (it embeds the instructions text), so
+  `JSON.parse` failed on every rollout, `agent-metrics list` never showed a
+  Codex subagent, and the `session_meta.payload.id` fallback in
+  `findCodexAgentFile` never matched. The reader now follows the first line to
+  its newline in 64KB chunks, capped at 1 MiB (a longer line is reported as a
+  scan skip naming the file). Surfaced live on 2026-09-03 by the new scan-skip
+  diagnostic, which reported all 43 rollouts on the dev machine as unreadable.
+- **`prepublishOnly` ordering let test artifacts persist into the packed
+  tarball.** It ran `npm run build && npm test`; `npm test`'s
+  `tsconfig.test.json` compile (same `outDir: dist`, tests included) ran
+  *after* `build`'s prod-only compile and doesn't clean first, so `dist/`
+  was guaranteed to hold `*.test.js`/`.d.ts`/`.map` and `test-utils.*` at
+  pack time — the `files` field's negations were the sole thing keeping them
+  out of the tarball. Reordered to `npm test && npm run build && npm run
+  check:pack`: `build`'s `clean` step now runs *after* the test compile and
+  wipes it, so `dist/` holds only the prod-only `tsconfig.json` emit at pack
+  time. The negations and `.npmignore` are kept as defense-in-depth; the new
+  `check:pack` (see Added) verifies the outcome directly.
+- **`program.parse()` silently dropped async command rejections.** The CLI
+  now calls `program.parseAsync().catch(...)`, printing a clean error and
+  exiting 1 instead of letting Node's default unhandled-rejection crash dump
+  a raw stack trace. The `find` command's action is now wrapped in the same
+  `try/catch` shape as `extract`/`list`/`compare`, so a filesystem error
+  (e.g. an unreadable `~/.claude/projects`) is reported cleanly rather than
+  surfacing as an unhandled rejection.
+- **Two empty `catch` blocks that discarded real failures.** `extract
+  --agent-name`'s buffer write-back and `appendToBuffer`'s opportunistic GC
+  both now report non-`LockAcquisitionError` failures (buffer unreadable,
+  etc.) via `console.error`/stderr + a `warn()` log line, instead of
+  swallowing them silently. Both remain non-fatal: the extract still
+  succeeds and the append still returns its entry. `LockAcquisitionError`
+  (expected under contention) is still ignored, as documented in
+  `lock.ts`.
+- **A transcript read failure was indistinguishable from "no `[agent:]`
+  tag".** `getFirstUserMessageContent` (internal — not re-exported from
+  `index.ts`)'s outer catch now logs a `warn()`
+  entry naming the transcript path and error before returning `null`,
+  instead of returning `null` silently for both cases. The stale "locked
+  during agent execution" comment is corrected — this read runs at
+  `SubagentStop`, after the agent has already stopped.
+- **`getLogStats` returned a half-populated result on a read failure.** If
+  the log file exists but can't be read, `lineCount`/`oldestEntry`/
+  `newestEntry` now reset to their unknown values and `readError` is set,
+  instead of leaving `lineCount` at a stale/partial value while `exists` and
+  `sizeBytes` (from the successful `statSync`) looked normal.
+- **`acquireLock` (internal — not re-exported from `index.ts`) spun the full
+  timeout on any write failure, not just lock
+  contention.** The stat/stale-reclaim branch now only runs when
+  `writeFileSync` fails with `EEXIST` (a lock file is genuinely there); any
+  other write error (`EACCES` on an unwritable parent, `EROFS`, a parent
+  removed after the directory-create step, `EMFILE`...) falls through to the
+  existing exponential-backoff block instead of retrying a doomed
+  stat-then-write loop until `maxWaitMs` elapses.
+- **`releaseLock` (internal — not re-exported from `index.ts`) silently
+  discarded a real unlink failure.** A non-`ENOENT`
+  error (e.g. `EACCES` on an unwritable parent directory) now writes a
+  stderr diagnostic naming the lock path and error code; `ENOENT` (already
+  released) remains fully silent. Never rethrows — this runs inside two
+  `finally` blocks.
+- **`getFirstUserMessageContent` (internal — not re-exported from
+  `index.ts`) miscounted and undercounted malformed
+  transcript lines.** A well-formed JSONL `null` line (`JSON.parse` succeeds,
+  but `null.type` then threw) was counted as malformed; it is now skipped
+  without incrementing the count. Separately, the malformed-line count was
+  only ever checked *after* the read loop completed, so it silently never
+  reported when a valid user message was found following the malformed
+  lines (the loop returns early on a match) — the common case. Both paths
+  now report correctly.
+- **`handleHook` (internal — not re-exported from `index.ts`) printed a
+  false "capture succeeded" summary when the
+  buffer write was skipped.** `appendToBuffer`'s return value is now
+  checked; a `null` return (lock contention — already warned by
+  `buffer.ts`) suppresses the per-agent summary line instead of printing it
+  unconditionally after a write that didn't happen. The hook still
+  approves either way.
+- **`queryBuffer`'s `endTimeAfter`/`endTimeBefore` window failed open on an
+  unknown or unparseable finish time.** `entry.end_time || entry.metrics.end_time`
+  falsy or an invalid date string (e.g. `'not-a-date'`) made both
+  `endTime && ...` comparisons short-circuit to `false`, so the entry was
+  never excluded — a caller asking "did this agent finish in window X"
+  could get back rows with no verifiable finish time at all. The filter is
+  now fail-closed: whenever either bound is set, an entry with no
+  parseable end_time (own or backfilled from `metrics.end_time`) is
+  excluded. Scoped to the query only — `isValidBufferEntry` still leaves
+  `end_time` unchecked on read, so an absent end_time remains a legitimate
+  buffer row outside an end-time-windowed query. Callers relying on the old
+  fail-open behavior will see fewer rows for a windowed query when rows
+  lack a usable end_time.
+- **`safeNum` (internal — not re-exported from `index.ts`) admitted
+  `Infinity`/`-Infinity`.** It coerced a value to a number only when
+  `typeof v === 'number' && !isNaN(v)` — `Infinity` and `-Infinity` pass
+  both checks, so a token field parsed from a pathological input like
+  `JSON.parse('1e999')` (which yields `Infinity`) flowed straight into the
+  token sums. `total_effective`/`total_raw` then went `Infinity`,
+  `JSON.stringify` renders that as `null`, and downstream
+  `isValidBufferEntry` rejects the whole row (or `-f tracker` output emits a
+  literal `null` into a `save_run` payload). Now `Number.isFinite(v)`, so
+  both infinities coerce to `0` like any other non-numeric input — matching
+  the guard `codex-extractor.ts` already used. `extractor.ts`'s copy was the
+  narrower one; the two are byte-equivalent now.
+- **`buffer list --since` accepted a well-formed but out-of-range duration
+  and silently returned the unfiltered list.** `parseSinceDuration`
+  computed `new Date(Date.now() - ms)` without checking the result — an
+  absurd-but-regex-valid input like `99999999999999999999m` overflows to an
+  `Invalid Date`, which every comparison in `queryBuffer`'s `since` filter
+  treats as `false`, so no row is ever excluded. The function now validates
+  the computed date and returns `null` (routing through the existing
+  invalid-format error path, exit 1) instead of silently proceeding with a
+  useless filter. The error message is broadened from "Use a number
+  followed by 'm' or 'h'" (misleading for a well-formed value that merely
+  overflows) to also name the range requirement.
+- **Three unused type imports in `extractor.ts`.** `TokenMetrics`,
+  `ExecutionMetrics`, and `ContentBlock` were imported from `./types.js` but
+  never referenced outside a single comment mentioning `TokenMetrics` by
+  name; removed. No behavior change — these are type-only imports, and
+  `noUnusedLocals` is not enabled, so this was previously undetected by the
+  build.
+- **Documentation corrections.** README's Buffer Functions import block was
+  missing `annotateBufferEntries` (exported since v0.7.0) and
+  `LockAcquisitionError`; both are added. CHANGELOG `[0.8.0]` now qualifies
+  `RUN_TAG_PATTERN`/`extractRunTag`/`detectRunToken` and `sanitizeLineSafe`
+  as internal-only (not re-exported from `index.ts`, and — for the hook
+  helpers — not reachable via the package's `exports` map at all, only as a
+  file path per the README's hook wiring), matching this file's own
+  precedent phrasing for internal symbols. The same qualification is applied
+  to internal symbols named unqualified elsewhere in this Unreleased section.
+- **`configureLogger` accepted `undefined` and invalid `minLevel` values and
+  silently applied them.** With `exactOptionalPropertyTypes` not enabled in
+  `tsconfig.json`, `configureLogger({ minLevel: undefined })` typechecks, and
+  the unconditional `{ ...currentConfig, ...config }` spread let it overwrite
+  a caller's already-set level — the same applied to `enabled` (logging
+  silently disabled) and `logPath` (an `undefined` path throws inside
+  `ensureLogDir`'s `path.dirname` on the next write). Rejected keys —
+  `undefined` for any field, or a `minLevel` that isn't one of the four
+  known levels (a new internal `isLogLevel` type guard, using
+  `hasOwnProperty` rather than the `in` operator so `'constructor'` cannot
+  pass) — now write one stderr diagnostic naming the key and the received
+  value and are dropped from the patch **before** the merge, so the current
+  value is retained rather than falling back to `DEFAULT_CONFIG` (which
+  would loosen a level a caller deliberately tightened). Sibling keys in the
+  same call are unaffected. This module still never throws on bad input —
+  semantics-only change, `configureLogger`'s signature is unchanged.
+- **`readStdin`'s 1MB stdin cap bounded resolution latency, not memory.**
+  The `data` handler's `done()` early-returns on a call after the promise
+  has already resolved, but `done()` returning does not stop the handler
+  itself from running — every subsequent chunk of an adversarial payload
+  still ran `data += chunk` and re-scanned `Buffer.byteLength(data)` for the
+  rest of the stream. The handler now checks `resolved` as its first
+  statement, and computes `Buffer.byteLength(data) + Buffer.byteLength(chunk)`
+  against the cap **before** appending (rather than after), so an
+  over-cap chunk is discarded without ever being concatenated onto `data`.
+  The cap branch now also writes a stderr diagnostic (`stdin exceeded <N>
+  bytes; discarding payload`), matching the existing hard-deadline path's
+  diagnostic, so the discard is visible instead of silent.
+- **Documentation.** `LogLevel` and `LoggerConfig` (logger.ts) gained JSDoc
+  summaries — the level ordering (`debug < info < warn < error`) and
+  `minLevel`'s floor semantics for the former, the mutate-via-`configureLogger`
+  /read-via-`getLoggerConfig` contract for the latter — bringing all 19 types
+  re-exported from `index.ts` to a documented summary (was 17/19). Five
+  public functions (`extractAgentMetrics`, `extractMultipleAgentMetrics`,
+  `appendToBuffer`, `queryBuffer`, `configureLogger`) gained a one-line
+  `@see README.md § <section>` JSDoc tag pointing at their README
+  documentation.
+
+### Provenance
+
+- Iteration 1: eight fixes, produced and verified by the `issue-remediation`
+  pipeline (tracker `agent-metrics`), each with a regression test proven to
+  fail against the pre-fix code and pass after.
+- Iteration 2: six further code changes closing eleven tracker issues
+  (several were sibling low/medium pairs on the same code path), same
+  pipeline and discipline — every regression test proven to fail against
+  the pre-fix code and pass after the fix, including two control tests
+  (a genuinely-malformed transcript line still warns; a non-`session_meta`
+  Codex record still produces no stderr) verifying the fixes didn't
+  overcorrect. `npm run build` + full suite green (346 tests, up from 326).
+- Iteration 3: eight tracker issues closed — `queryBuffer`'s `endTime`
+  window fails closed on absent/unparseable `end_time` (two issues, one
+  predicate); the `GC_INTERVAL_MS` comment corrected to say the throttle is
+  per-process (the cross-process mechanism is deferred to the spec queue);
+  README import blocks completed (`annotateBufferEntries`,
+  `LockAcquisitionError` as a value import) with the `check:readme-exports`
+  gate added so the next export cannot land undocumented; the `[0.8.0]`
+  hook-internal symbols qualified in place; CLI-layer `-f tracker` `run_id`
+  exclusion and the run-token 64-char cap pinned by tests (the latter
+  proven against a `{2,127}` regex mutation that would otherwise truncate
+  silently); and `prepublishOnly` reordered to `test && build && check:pack`
+  so test artifacts can no longer reach the tarball by build ordering, with
+  the `check:pack` gate added. Suite 346 → 354, every new test proven
+  fail-first.
+- Iteration 4: four tracker-issue fixes closed (three unused type imports;
+  `safeNum` admitting `Infinity`; `buffer list --since` overflow;
+  query/display-half of the unparseable-`captured_at` issue — the
+  `isExpired` retention-policy half is deliberately deferred to the spec
+  queue), one contextual issue's documentation half only (error-signalling
+  JSDoc + README, left open — see the issue's own note), and one untracked
+  finding from this iteration's investigation: `cleanupExpired` /
+  `clearSession` / `clearAgents` / `annotateBufferEntries` were silently
+  deleting quarantined (skip-on-read) buffer lines on every triggered
+  rewrite — fixed via a new internal `readBufferWithQuarantine`. Also named
+  three previously-anonymous option/query types (`AppendOptions`,
+  `BufferQuery`, in-file-only `MetricsCaptureOptions`) and deduplicated a
+  test-only helper (`hook.test.ts`'s `createTestTranscript`, no production
+  code touched). Same pipeline and discipline — every regression test
+  proven to fail against the pre-fix code and pass after, with named
+  negative controls (e.g. `1e10` still round-trips; `2400000000h` is still
+  accepted; a valid `captured_at` still renders/sorts/filters normally).
+  `npm run lint` + `npm test` + `npm run build` + `npm run check:pack` +
+  `npm run check:readme-exports` all clean; full suite green (367 tests, up
+  from 354 — the pre-existing suite's 354 all still pass unmodified, one
+  duplicate helper aside).
+- Iteration 5 (final): six tracker issues closed — `LogLevel`/`LoggerConfig`
+  JSDoc summaries (census: 19/19 index.ts-re-exported types now documented,
+  was 17/19); `configureLogger` now rejects `undefined` and invalid
+  `minLevel` values at the merge point instead of silently applying them
+  (warn-and-retain, never throws, sibling keys unaffected); five `@see
+  README.md § ...` JSDoc tags added (discretionary polish on an
+  already-observation-stamped issue, no test); the duplicated unique-temp-name
+  construction in `buffer.ts` extracted into one internal `bufferTempPath`
+  helper, and the `.tmp`-file-lingering test at `buffer.test.ts` — which
+  asserted against a fixed suffix (`<bufferPath>.tmp`) that no code has ever
+  produced, so it passed vacuously even with the atomic rename disabled —
+  replaced with a sibling-directory scan that does fail under that same
+  negative control; `readStdin`'s 1MB stdin cap now bounds memory (checked
+  before the chunk is appended, first statement of the handler returns early
+  once already resolved) instead of only resolution latency, with a stderr
+  diagnostic added at the cap matching the existing hard-deadline path's;
+  and five README CLI-example gaps (a missing `-p` flag on the `extract`
+  table row and four missing example invocations) closed per an exact
+  census of the 17 Commands Reference rows. Same pipeline and discipline —
+  every regression test proven to fail against the pre-fix code and pass
+  after, including two negative-control demonstrations for the temp-path
+  fix (a fixed-suffix regression on `bufferTempPath` alone, and a
+  disabled-rename regression reproducing the exact "21 !== 1" cap-diagnostic
+  symptom the stdin fix's own restructuring avoids). `npm run lint` +
+  `npm test` + `npm run build` + `npm run check:pack` + `npm run
+  check:readme-exports` all clean; full suite green (375 tests, up from 367
+  — the pre-existing suite's 367 all still pass unmodified).
+
 ## [0.8.0] - 2026-07-15
 
 ### Added
@@ -19,7 +422,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   60-minute buffer window pulled in agents from other concurrent sessions, so
   the metrics were omitted rather than mis-attributed.
   - **`[run:token]` tag + `RUN_TAG_PATTERN` / `extractRunTag` / `detectRunToken`**
-    in the SubagentStop hook. Grammar `/\[run:([a-z0-9][a-z0-9-]{2,63})\]/i` —
+    in the SubagentStop hook (none re-exported from `index.ts` — internal
+    only, and not reachable via the package's `exports` map at all; `hook.ts`
+    is wired in only as a file path, per the Setup section below). Grammar
+    `/\[run:([a-z0-9][a-z0-9-]{2,63})\]/i` —
     its own namespace (a leading digit is permitted, unlike agent names), 3–64
     chars, line-safe by construction (excludes `]` and control chars). The hook
     reads the first user message **once** and extracts both the agent name and
@@ -33,7 +439,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Composes with `-p`/`--since` as an AND of predicates; case-insensitive at
     the surface.
 - **`sanitizeLineSafe`** — the single line-safety helper (strip control chars +
-  64-char cap) now shared by `agent_type` and the run token.
+  64-char cap) now shared by `agent_type` and the run token (not re-exported
+  from `index.ts` — internal only, and not reachable via the package's
+  `exports` map at all; only importable as a `hook.ts` file path).
 
 ### Notes
 

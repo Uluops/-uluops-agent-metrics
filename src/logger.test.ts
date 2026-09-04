@@ -26,6 +26,7 @@ import {
   getLogStats,
   logMetricsCapture,
   logBufferOperation,
+  type LogLevel,
 } from './logger.js';
 
 // Test configuration with isolated temp directory
@@ -85,6 +86,79 @@ describe('Logger Module', () => {
       const newConfig = getLoggerConfig();
       assert.strictEqual(newConfig.minLevel, 'error');
       assert.strictEqual(newConfig.maxFileSize, originalConfig.maxFileSize);
+    });
+
+    describe('issue 1f6d6ba2: invalid/undefined values do not overwrite a good config', () => {
+      let originalWrite: typeof process.stderr.write;
+
+      beforeEach(() => {
+        originalWrite = process.stderr.write;
+        configureLogger({ logPath: TEST_LOG_PATH, minLevel: 'debug', enabled: true });
+      });
+
+      afterEach(() => {
+        process.stderr.write = originalWrite;
+      });
+
+      it('rejects an invalid minLevel and retains the current (stricter) level', () => {
+        configureLogger({ minLevel: 'error' });
+        process.stderr.write = (() => true) as typeof process.stderr.write;
+
+        configureLogger({ minLevel: 'verbose' as LogLevel });
+
+        assert.strictEqual(getLoggerConfig().minLevel, 'error', 'minLevel must not be loosened by an invalid value');
+
+        fs.writeFileSync(TEST_LOG_PATH, '');
+        debug('should not be written');
+        error('should be written');
+
+        const content = fs.readFileSync(TEST_LOG_PATH, 'utf-8');
+        assert.ok(!content.includes('should not be written'), 'debug entry must be dropped — minLevel is still error');
+        assert.ok(content.includes('should be written'), 'error entry must be written — minLevel is still error');
+      });
+
+      it('rejects an undefined minLevel and retains the current value', () => {
+        configureLogger({ minLevel: 'error' });
+
+        configureLogger({ minLevel: undefined });
+
+        assert.strictEqual(getLoggerConfig().minLevel, 'error', 'minLevel must not be reset by an explicit undefined');
+
+        fs.writeFileSync(TEST_LOG_PATH, '');
+        debug('should not be written either');
+        const content = fs.readFileSync(TEST_LOG_PATH, 'utf-8');
+        assert.ok(!content.includes('should not be written either'), 'debug entry must be dropped — minLevel is still error');
+      });
+
+      it('control: a valid minLevel still applies', () => {
+        configureLogger({ minLevel: 'error' });
+        configureLogger({ minLevel: 'debug' });
+
+        assert.strictEqual(getLoggerConfig().minLevel, 'debug');
+
+        fs.writeFileSync(TEST_LOG_PATH, '');
+        debug('written when valid debug applies');
+        const content = fs.readFileSync(TEST_LOG_PATH, 'utf-8');
+        assert.ok(content.includes('written when valid debug applies'));
+      });
+
+      it('control: sibling keys in the same call still apply when minLevel is rejected', () => {
+        configureLogger({ minLevel: 'error', maxFiles: 3 });
+
+        configureLogger({ minLevel: 'nope' as LogLevel, maxFiles: 7 });
+
+        const config = getLoggerConfig();
+        assert.strictEqual(config.maxFiles, 7, 'sibling key must still apply');
+        assert.strictEqual(config.minLevel, 'error', 'rejected minLevel must be retained, not defaulted');
+      });
+
+      it('rejects a prototype-pollution-shaped minLevel ("constructor")', () => {
+        configureLogger({ minLevel: 'error' });
+
+        configureLogger({ minLevel: 'constructor' as LogLevel });
+
+        assert.strictEqual(getLoggerConfig().minLevel, 'error', '"constructor" must not pass as a valid LogLevel');
+      });
     });
   });
 
@@ -384,6 +458,21 @@ describe('Logger Module', () => {
 
       const stats = getLogStats();
       assert.ok(stats.rotatedFiles >= 1, 'Should have at least one rotated file');
+    });
+
+    it('issue f34180fe: reports readError and resets line stats when the log path exists but is unreadable', () => {
+      // A directory in place of a file: existsSync/statSync succeed (so
+      // sizeBytes is trustworthy), but readFileSync throws EISDIR.
+      const dirLogPath = path.join(TEST_DIR, 'log-as-directory.log');
+      fs.mkdirSync(dirLogPath, { recursive: true });
+      configureLogger({ logPath: dirLogPath, enabled: true, minLevel: 'info' });
+
+      const stats = getLogStats();
+      assert.strictEqual(stats.exists, true, 'statSync succeeded, so exists must be true');
+      assert.ok(stats.readError && stats.readError.length > 0, 'readError should be a non-empty message');
+      assert.strictEqual(stats.lineCount, 0, 'lineCount must reset to the unknown value on read failure');
+      assert.strictEqual(stats.oldestEntry, null);
+      assert.strictEqual(stats.newestEntry, null);
     });
   });
 

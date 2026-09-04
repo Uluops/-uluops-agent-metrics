@@ -115,6 +115,10 @@ function tryParseJson(value: string): Record<string, unknown> | null {
   try {
     return asRecord(JSON.parse(value) as unknown);
   } catch {
+    // AUDIT-OK(no_empty_catch): tool output is free-form text by default —
+    // non-JSON is the normal case, not an error. null here means "not a
+    // structured error payload", so isFailedToolOutput's caller correctly
+    // falls through to its other is_error/success checks.
     return null;
   }
 }
@@ -217,9 +221,9 @@ function processRecord(acc: CodexAccumulator, record: CodexRecord): void {
   }
 }
 
-function buildMetrics(acc: CodexAccumulator): AgentMetrics {
+function buildMetrics(acc: CodexAccumulator, filePath: string): AgentMetrics {
   if (!acc.sessionMeta || acc.validRecordCount === 0) {
-    throw new Error('No valid Codex session records found');
+    throw new Error(`No valid Codex session records found in ${filePath}`);
   }
 
   const usage = acc.tokenUsage ?? {};
@@ -278,6 +282,22 @@ function buildMetrics(acc: CodexAccumulator): AgentMetrics {
   };
 }
 
+/**
+ * Extract metrics from a Codex rollout JSONL file.
+ *
+ * Streams the file line-by-line, skipping malformed lines and records with
+ * an unrecognized shape (each skip is logged to stderr), and accumulates
+ * token, tool, and timing metrics.
+ *
+ * Unlike {@link extractMetricsFromFile}, this does NOT pre-check the file
+ * with `fs.access` — an unreadable path surfaces as the raw stream error
+ * (e.g. ENOENT) rather than a wrapped, friendlier message.
+ *
+ * @param filePath - Path to the Codex rollout JSONL file
+ * @returns AgentMetrics object
+ * @throws Error if the file cannot be opened/read, or if it contains no
+ *   valid session_meta record (see buildMetrics)
+ */
 export async function extractCodexMetricsFromFile(filePath: string): Promise<AgentMetrics> {
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
@@ -302,9 +322,18 @@ export async function extractCodexMetricsFromFile(filePath: string): Promise<Age
     }
   }
 
-  return buildMetrics(acc);
+  return buildMetrics(acc, filePath);
 }
 
+/**
+ * Extract metrics for a Codex agent by UUIDv7 id.
+ *
+ * @param agentId - The Codex agent (thread) UUIDv7 id
+ * @returns AgentMetrics object, or null if no matching rollout file was found
+ * @throws Error if a matching file WAS found but could not be read or
+ *   parsed into valid metrics (see extractCodexMetricsFromFile) — null means
+ *   "not there", a throw means "there, but unusable"
+ */
 export async function extractCodexAgentMetrics(agentId: string): Promise<AgentMetrics | null> {
   const location = await findCodexAgentFile(agentId);
   if (!location) return null;

@@ -334,6 +334,30 @@ describe('Core Commands', () => {
       // Extract succeeds and uses the supplied name
       assert.ok(jsonOutput.includes('fallback-name'), 'Extract should succeed and use the supplied name');
     });
+
+    it('AF-002: write-back failure is reported, not swallowed, when the buffer is unreadable', async (t) => {
+      if (process.getuid?.() === 0) {
+        t.skip('running as root bypasses filesystem permission bits');
+        return;
+      }
+
+      appendToBuffer(createTestMetrics({ agent_id: 'abc1234', session_id: 'wb-session-3' }), { config: TEST_BUFFER_CONFIG });
+      fs.chmodSync(TEST_BUFFER_CONFIG.bufferPath, 0o200);
+
+      try {
+        await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'my-validator']);
+      } finally {
+        fs.chmodSync(TEST_BUFFER_CONFIG.bufferPath, 0o644);
+      }
+
+      const textOutput = output.join('\n');
+      // Tracker JSON must still print — write-back stays non-fatal.
+      assert.ok(textOutput.includes('my-validator'), 'Tracker output should still reflect the supplied name');
+      // But the failure must be visible, naming the affected agent.
+      const warningLine = output.find(line => /could not persist agent name/.test(line));
+      assert.ok(warningLine, `Expected a "could not persist agent name" warning, got:\n${textOutput}`);
+      assert.ok(warningLine.includes('abc1234'), `Warning should name the affected agent ID:\n${warningLine}`);
+    });
   });
 
   describe('F7: compare with explicit codex provider', () => {

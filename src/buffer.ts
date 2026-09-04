@@ -10,8 +10,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { AgentMetrics } from './types.js';
-import { logMetricsCapture, logBufferOperation } from './logger.js';
-import { acquireLock, releaseLock, withFileLock } from './lock.js';
+import { logMetricsCapture, logBufferOperation, warn } from './logger.js';
+import { acquireLock, releaseLock, withFileLock, LockAcquisitionError } from './lock.js';
 
 /**
  * Buffer entry stored in the global metrics buffer
@@ -108,28 +108,37 @@ function toJsonlContent(entries: BufferEntry[]): string {
 }
 
 /**
- * Validate that a parsed object has the required BufferEntry shape.
- * Returns true if valid, false if missing required fields.
- * Note: end_time is optional for backwards compatibility with older entries.
+ * Find the first field a parsed object is missing (or has the wrong type
+ * for) relative to the required BufferEntry shape. Returns null when the
+ * object satisfies every required field.
+ *
+ * RULE: `isValidBufferEntry`'s `obj is BufferEntry` assertion is a promise
+ * to every downstream consumer that dereferences a field unconditionally —
+ * formatters.ts:78,115,163,164,167 (metrics.duration_formatted,
+ * metrics.tokens.total_effective, metrics.model, metrics.execution.tool_use_count)
+ * and entriesToTrackerFormat (metrics.model, metrics.duration_ms). A field
+ * added here must be checked here; a field a consumer dereferences without
+ * an `if` must be checked here. Optional cross-harness fields (e.g.
+ * end_time, agent_name) stay unchecked — consumers already guard them.
  */
-function isValidBufferEntry(obj: unknown): obj is BufferEntry {
-  if (!obj || typeof obj !== 'object') return false;
+function findMissingBufferEntryField(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object') return 'entry (not an object)';
   const entry = obj as Record<string, unknown>; // safe: guarded by typeof check above
 
   // Check required string fields
-  if (typeof entry.agent_id !== 'string') return false;
-  if (typeof entry.session_id !== 'string') return false;
-  if (typeof entry.captured_at !== 'string') return false;
-  if (typeof entry.expires_at !== 'string') return false;
+  if (typeof entry.agent_id !== 'string') return 'agent_id';
+  if (typeof entry.session_id !== 'string') return 'session_id';
+  if (typeof entry.captured_at !== 'string') return 'captured_at';
+  if (typeof entry.expires_at !== 'string') return 'expires_at';
 
   // Check metrics object exists
-  if (!entry.metrics || typeof entry.metrics !== 'object') return false;
+  if (!entry.metrics || typeof entry.metrics !== 'object') return 'metrics';
 
   // F5: metrics.tokens must exist. Consumers (entriesToTrackerFormat) dereference
   // metrics.tokens.* unconditionally; an entry with `metrics` but no `tokens` would
   // TypeError-crash them — and one bad entry takes down the whole save_run batch.
   const metrics = entry.metrics as Record<string, unknown>;
-  if (!metrics.tokens || typeof metrics.tokens !== 'object') return false;
+  if (!metrics.tokens || typeof metrics.tokens !== 'object') return 'metrics.tokens';
 
   // The five core token fields must be NUMBERS, not merely present: a
   // `tokens: {}` entry would pass an existence check but flow undefined
@@ -137,10 +146,27 @@ function isValidBufferEntry(obj: unknown): obj is BufferEntry {
   // the TypeError. (Optional cross-harness components stay optional.)
   const tokens = metrics.tokens as Record<string, unknown>;
   for (const field of ['input', 'output', 'cache_creation', 'cache_read', 'total_effective']) {
-    if (typeof tokens[field] !== 'number') return false;
+    if (typeof tokens[field] !== 'number') return `metrics.tokens.${field}`;
   }
 
-  return true;
+  // formatters.ts and entriesToTrackerFormat dereference these unconditionally.
+  if (typeof metrics.model !== 'string') return 'metrics.model';
+  if (typeof metrics.duration_ms !== 'number') return 'metrics.duration_ms';
+  if (typeof metrics.duration_formatted !== 'string') return 'metrics.duration_formatted';
+  if (!metrics.execution || typeof metrics.execution !== 'object') return 'metrics.execution';
+  const execution = metrics.execution as Record<string, unknown>;
+  if (typeof execution.tool_use_count !== 'number') return 'metrics.execution.tool_use_count';
+
+  return null;
+}
+
+/**
+ * Validate that a parsed object has the required BufferEntry shape.
+ * Returns true if valid, false if missing required fields.
+ * Note: end_time is optional for backwards compatibility with older entries.
+ */
+function isValidBufferEntry(obj: unknown): obj is BufferEntry {
+  return findMissingBufferEntryField(obj) === null;
 }
 
 /**
@@ -165,10 +191,40 @@ function isExpired(entry: BufferEntry, now: Date): boolean {
  * runs at most once per minute (the buffer grows by at most a few KB between
  * runs, and TTL is 30 days). Callers needing immediate GC invoke cleanupExpired
  * directly.
+ *
+ * This "at most once per minute" guarantee holds only WITHIN one process: `lastGcAt`
+ * is a module-level variable, and the SubagentStop hook (hook.ts `main()`, which calls
+ * `appendToBuffer`) is a fresh process per invocation that exits when `main()`
+ * completes (`process.exit` is called only on its failure path) — no in-memory state
+ * survives between invocations (ADR-0002, Context) — so on the hook path this gate is
+ * always open and
+ * every SubagentStop firing pays the real per-call cost: a full buffer read + parse
+ * under the file lock, with a rewrite only when `removeWhere` (below) finds at least
+ * one expired entry (`removedCount > 0`). Long-lived callers in the same process (e.g.
+ * a CLI session issuing multiple appends) do get the once-per-minute throttling as
+ * written.
  */
 const GC_INTERVAL_MS = 60_000;
 /** Timestamp of the last successful opportunistic GC run (module-level, process-scoped). */
 let lastGcAt = 0;
+
+/**
+ * Options for {@link appendToBuffer}.
+ */
+export interface AppendOptions {
+  /** Name of the agent that produced these metrics */
+  agentName?: string;
+  /** Project path where the agent ran */
+  projectPath?: string;
+  /** Orchestrator-minted run token; buffer-query key only (not tracker payload) */
+  runId?: string;
+  /** Time-to-live in milliseconds (default: 30 days) */
+  ttlMs?: number;
+  /** Buffer configuration override */
+  config?: BufferConfig;
+  /** Source of the capture: 'hook', 'cli', or 'api' */
+  source?: 'hook' | 'cli' | 'api';
+}
 
 /**
  * Append a metrics entry to the buffer.
@@ -176,27 +232,13 @@ let lastGcAt = 0;
  *
  * @param metrics - The agent metrics to store
  * @param options - Optional configuration for the buffer entry
- * @param options.agentName - Name of the agent that produced these metrics
- * @param options.projectPath - Project path where the agent ran
- * @param options.runId - Orchestrator-minted run token (buffer-query key only)
- * @param options.ttlMs - Time-to-live in milliseconds (default: 30 days)
- * @param options.config - Buffer configuration override
- * @param options.source - Source of capture: 'hook', 'cli', or 'api'
  * @returns The created buffer entry, or null if the append was skipped because
  *   the buffer lock could not be acquired (fail-closed under lock contention)
+ * @see README.md § Buffer Functions
  */
 export function appendToBuffer(
   metrics: AgentMetrics,
-  options: {
-    agentName?: string;
-    projectPath?: string;
-    /** Orchestrator-minted run token; buffer-query key only (not tracker payload) */
-    runId?: string;
-    ttlMs?: number;
-    config?: BufferConfig;
-    /** Source of the capture: 'hook', 'cli', or 'api' */
-    source?: 'hook' | 'cli' | 'api';
-  } = {}
+  options: AppendOptions = {}
 ): BufferEntry | null {
   const config = options.config || defaultConfig();
   const ttl = options.ttlMs ?? config.defaultTTL;
@@ -271,17 +313,61 @@ export function appendToBuffer(
   // Time-gated: skip if GC ran within GC_INTERVAL_MS to avoid full
   // read+rewrite on every append during agent bursts. Callers needing
   // immediate GC invoke cleanupExpired() directly.
+  // A LockAcquisitionError just means another process is GC'ing right now —
+  // the next append retries, so it's silently ignored. Any other failure
+  // (e.g. the buffer file itself is unreadable) is reported; it will not
+  // resolve on retry, and swallowing it silently would let corruption hide.
   const nowMs = Date.now();
   if (nowMs - lastGcAt >= GC_INTERVAL_MS) {
     try {
       cleanupExpired(config);
       lastGcAt = nowMs;
-    } catch {
-      // ignore — next append retries
+    } catch (err) {
+      if (!(err instanceof LockAcquisitionError)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`Warning: buffer GC failed for ${config.bufferPath}: ${msg}\n`);
+        warn('buffer GC failed', { buffer_path: config.bufferPath, error: msg });
+      }
     }
   }
 
   return entry;
+}
+
+/**
+ * Parse buffer file content into valid entries plus the raw text of every
+ * skipped line (quarantined: well-formed JSON that failed isValidBufferEntry,
+ * or JSON that failed to parse at all), in file order. Shared by readBuffer
+ * and readBufferWithQuarantine so the two never drift on what counts as
+ * skippable.
+ */
+function parseBufferContent(content: string): { entries: BufferEntry[]; quarantinedLines: string[] } {
+  const lines = content.trim().split('\n').filter(Boolean);
+
+  const entries: BufferEntry[] = [];
+  const quarantinedLines: string[] = [];
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (isValidBufferEntry(parsed)) {
+        // Backfill end_time from metrics if missing (backwards compatibility)
+        if (!parsed.end_time && typeof parsed.metrics.end_time === 'string') {
+          parsed.end_time = parsed.metrics.end_time;
+        }
+        entries.push(parsed);
+      } else {
+        const missingField = findMissingBufferEntryField(parsed);
+        process.stderr.write(`Warning: Skipping buffer entry with missing required field: ${missingField}\n`);
+        quarantinedLines.push(line);
+      }
+    } catch (err) {
+      // Log malformed lines so users have visibility into data issues
+      process.stderr.write(`Warning: Skipping malformed buffer entry: ${err instanceof Error ? err.message : 'parse error'}\n`);
+      quarantinedLines.push(line);
+    }
+  }
+
+  return { entries, quarantinedLines };
 }
 
 /**
@@ -296,28 +382,27 @@ export function readBuffer(config: BufferConfig = defaultConfig()): BufferEntry[
   }
 
   const content = fs.readFileSync(config.bufferPath, 'utf-8');
-  const lines = content.trim().split('\n').filter(Boolean);
+  return parseBufferContent(content).entries;
+}
 
-  const entries: BufferEntry[] = [];
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (isValidBufferEntry(parsed)) {
-        // Backfill end_time from metrics if missing (backwards compatibility)
-        if (!parsed.end_time && typeof parsed.metrics.end_time === 'string') {
-          parsed.end_time = parsed.metrics.end_time;
-        }
-        entries.push(parsed);
-      } else {
-        process.stderr.write('Warning: Skipping buffer entry with missing required fields\n');
-      }
-    } catch (err) {
-      // Log malformed lines so users have visibility into data issues
-      process.stderr.write(`Warning: Skipping malformed buffer entry: ${err instanceof Error ? err.message : 'parse error'}\n`);
-    }
+/**
+ * Like readBuffer, but also returns the raw text of every quarantined line
+ * (malformed JSON, or valid JSON that failed isValidBufferEntry), in file
+ * order. Used exclusively by the rewrite paths (removeWhere,
+ * annotateBufferEntries) so a rewrite preserves quarantined rows instead of
+ * silently deleting them — readBuffer's own filtering is read-only and never
+ * touches the file, but a caller that rewrites the file from readBuffer's
+ * output alone would drop every line readBuffer chose not to return.
+ */
+function readBufferWithQuarantine(
+  config: BufferConfig = defaultConfig()
+): { entries: BufferEntry[]; quarantinedLines: string[] } {
+  if (!fs.existsSync(config.bufferPath)) {
+    return { entries: [], quarantinedLines: [] };
   }
 
-  return entries;
+  const content = fs.readFileSync(config.bufferPath, 'utf-8');
+  return parseBufferContent(content);
 }
 
 /**
@@ -332,33 +417,46 @@ export function readValidEntries(config: BufferConfig = defaultConfig()): Buffer
 }
 
 /**
+ * Query filters for {@link queryBuffer}.
+ */
+export interface BufferQuery {
+  /** Filter by session ID */
+  sessionId?: string;
+  /** Filter by agent ID */
+  agentId?: string;
+  /** Filter by validator name */
+  agentName?: string;
+  /** Filter to a single orchestrator run token (exact match) */
+  runId?: string;
+  /** Filter by project path */
+  projectPath?: string;
+  /**
+   * Only include entries captured after this date. Fails closed: an entry
+   * with an unparseable captured_at is excluded whenever this is set.
+   */
+  since?: Date;
+  /**
+   * Only include entries where agent finished after this date. Fails
+   * closed: an entry with no parseable end_time (own or backfilled from
+   * metrics.end_time) is excluded whenever either end_time bound is set.
+   */
+  endTimeAfter?: Date;
+  /** Only include entries where agent finished before this date. Same fail-closed behavior as endTimeAfter. */
+  endTimeBefore?: Date;
+  /** Include expired entries (default: false) */
+  includeExpired?: boolean;
+}
+
+/**
  * Query buffer entries by various criteria.
  *
  * @param query - Query filters
- * @param query.sessionId - Filter by session ID
- * @param query.agentId - Filter by agent ID
- * @param query.agentName - Filter by validator name
- * @param query.runId - Filter to a single orchestrator run token (exact match)
- * @param query.projectPath - Filter by project path
- * @param query.since - Only include entries captured after this date
- * @param query.endTimeAfter - Only include entries where agent finished after this date
- * @param query.endTimeBefore - Only include entries where agent finished before this date
- * @param query.includeExpired - Include expired entries (default: false)
  * @param config - Buffer configuration (optional, uses defaults)
  * @returns Array of matching buffer entries
+ * @see README.md § Buffer Functions
  */
 export function queryBuffer(
-  query: {
-    sessionId?: string;
-    agentId?: string;
-    agentName?: string;
-    runId?: string;
-    projectPath?: string;
-    since?: Date;
-    endTimeAfter?: Date;
-    endTimeBefore?: Date;
-    includeExpired?: boolean;
-  },
+  query: BufferQuery,
   config: BufferConfig = defaultConfig()
 ): BufferEntry[] {
   const entries = query.includeExpired
@@ -371,11 +469,28 @@ export function queryBuffer(
     if (query.agentName && entry.agent_name !== query.agentName) return false;
     if (query.runId && entry.run_id !== query.runId) return false;
     if (query.projectPath && entry.project_path !== query.projectPath) return false;
-    if (query.since && new Date(entry.captured_at) < query.since) return false;
-    // Filter by agent end_time (when the agent actually finished)
-    const endTime = entry.end_time || entry.metrics.end_time;
-    if (query.endTimeAfter && endTime && new Date(endTime) < query.endTimeAfter) return false;
-    if (query.endTimeBefore && endTime && new Date(endTime) > query.endTimeBefore) return false;
+    // Fail closed on an unparseable captured_at, same posture as the
+    // endTime bounds below: a `since` window is a claim about WHEN the
+    // entry was captured, and an unknown/unparseable capture time cannot
+    // satisfy it. QUERY-SCOPED — readBuffer/isValidBufferEntry never
+    // reject a row for this; it only affects this filtered view.
+    if (query.since) {
+      const capturedAtMs = new Date(entry.captured_at).getTime();
+      if (Number.isNaN(capturedAtMs) || capturedAtMs < query.since.getTime()) return false;
+    }
+    // Filter by agent end_time (when the agent actually finished). Fail closed: a
+    // finish-time window is a claim about WHEN the agent finished, and an unknown or
+    // unparseable finish time cannot satisfy it. This exclusion is QUERY-SCOPED — it
+    // only applies when an endTime bound is actually requested; an absent end_time
+    // stays a legitimate row for readBuffer (isValidBufferEntry deliberately leaves
+    // end_time unchecked).
+    if (query.endTimeAfter || query.endTimeBefore) {
+      const raw = entry.end_time || entry.metrics.end_time;
+      const t = raw ? new Date(raw).getTime() : NaN;
+      if (Number.isNaN(t)) return false;
+      if (query.endTimeAfter && t < query.endTimeAfter.getTime()) return false;
+      if (query.endTimeBefore && t > query.endTimeBefore.getTime()) return false;
+    }
     return true;
   });
 }
@@ -412,9 +527,46 @@ export function getAllForSession(
   sessionId: string,
   config: BufferConfig = defaultConfig()
 ): BufferEntry[] {
-  return queryBuffer({ sessionId }, config).sort((a, b) =>
-    new Date(a.captured_at).getTime() - new Date(b.captured_at).getTime()
-  );
+  return queryBuffer({ sessionId }, config).sort((a, b) => {
+    const aTime = new Date(a.captured_at).getTime();
+    const bTime = new Date(b.captured_at).getTime();
+    const aValid = !Number.isNaN(aTime);
+    const bValid = !Number.isNaN(bTime);
+    // NaN-safe: `aTime - bTime` with either side NaN yields NaN, which
+    // Array.prototype.sort treats inconsistently. Sort unparseable
+    // captured_at values last, deterministically, instead of leaving their
+    // position engine-dependent.
+    if (aValid && bValid) return aTime - bTime;
+    if (aValid) return -1;
+    if (bValid) return 1;
+    return 0;
+  });
+}
+
+/**
+ * Build a unique sibling temp-file path for an atomic rewrite of `bufferPath`.
+ *
+ * Atomic rewrite: write to a sibling temp file then rename into place. A
+ * direct writeFileSync truncates-then-writes, so a crash or ENOSPC mid-write
+ * would leave the buffer empty or half-written, losing all still-buffered
+ * un-shipped metrics (the lock guards concurrency, not crash-atomicity).
+ * rename(2) on the same filesystem is atomic, so a crash leaves either the
+ * complete old file or the complete new one. Same pattern as the log
+ * rotation in logger.ts.
+ *
+ * Unique temp name per writer: withFileLock is fail-closed, but the 30s
+ * stale-lock reclaim (lock.ts) can still hand two live writers the lock when
+ * a slow holder exceeds the staleness threshold mid-rewrite. A shared
+ * '.tmp' would let them interleave writes into the same file and rename a
+ * half-written temp over the buffer, truncating everything. Unique names
+ * confine the damage to last-rename-wins (stale snapshot), never a corrupt
+ * file. Do NOT simplify to a shared temp name while the stale-reclaim
+ * window exists.
+ *
+ * @internal Not re-exported from index.ts — buffer.ts internal only.
+ */
+export function bufferTempPath(bufferPath: string): string {
+  return `${bufferPath}.${process.pid}.${randomUUID()}.tmp`;
 }
 
 /**
@@ -430,28 +582,18 @@ function removeWhere(
   config: BufferConfig = defaultConfig(),
 ): number {
   return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
-    const allEntries = readBuffer(config);
+    const { entries: allEntries, quarantinedLines } = readBufferWithQuarantine(config);
     const remaining = allEntries.filter(keep);
     const removedCount = allEntries.length - remaining.length;
 
     if (removedCount > 0) {
-      // Atomic rewrite: write to a sibling temp file then rename into place.
-      // A direct writeFileSync truncates-then-writes, so a crash or ENOSPC
-      // mid-write would leave the buffer empty or half-written, losing all
-      // still-buffered un-shipped metrics (the lock guards concurrency, not
-      // crash-atomicity). rename(2) on the same filesystem is atomic, so a
-      // crash leaves either the complete old file or the complete new one.
-      // Same pattern as the log rotation in logger.ts.
-      // Unique temp name per writer: withFileLock is fail-closed, but the
-      // 30s stale-lock reclaim (lock.ts) can still hand two live writers
-      // the lock when a slow holder exceeds the staleness threshold
-      // mid-rewrite. A shared '.tmp' would let them interleave writes into
-      // the same file and rename a half-written temp over the buffer,
-      // truncating everything. Unique names confine the damage to
-      // last-rename-wins (stale snapshot), never a corrupt file. Do NOT
-      // simplify to a shared temp name while the stale-reclaim window exists.
-      const tmpPath = `${config.bufferPath}.${process.pid}.${randomUUID()}.tmp`;
-      fs.writeFileSync(tmpPath, toJsonlContent(remaining), 'utf-8');
+      // Quarantined lines (skipped by readBufferWithQuarantine — malformed
+      // JSON, or well-formed JSON failing isValidBufferEntry) are appended
+      // verbatim so this rewrite doesn't silently delete rows a read merely
+      // chose not to return.
+      const tmpPath = bufferTempPath(config.bufferPath);
+      const content = toJsonlContent(remaining) + quarantinedLines.map((l) => l + '\n').join('');
+      fs.writeFileSync(tmpPath, content, 'utf-8');
       fs.renameSync(tmpPath, config.bufferPath);
     }
 
@@ -476,7 +618,7 @@ export function annotateBufferEntries(
   config: BufferConfig = defaultConfig(),
 ): number {
   return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
-    const allEntries = readBuffer(config);
+    const { entries: allEntries, quarantinedLines } = readBufferWithQuarantine(config);
     let updated = 0;
 
     for (const entry of allEntries) {
@@ -488,10 +630,14 @@ export function annotateBufferEntries(
     }
 
     if (updated > 0) {
-      // Same atomic temp-file + rename pattern (and unique-temp-name
-      // rationale — stale-reclaim double-holder) as removeWhere.
-      const tmpPath = `${config.bufferPath}.${process.pid}.${randomUUID()}.tmp`;
-      fs.writeFileSync(tmpPath, toJsonlContent(allEntries), 'utf-8');
+      // Same atomic temp-file + rename pattern (see bufferTempPath's doc
+      // comment for the crash-atomicity and unique-name rationale) as
+      // removeWhere. Quarantined lines are appended verbatim for the same
+      // reason as removeWhere: this rewrite must not silently delete rows a
+      // read merely skipped.
+      const tmpPath = bufferTempPath(config.bufferPath);
+      const content = toJsonlContent(allEntries) + quarantinedLines.map((l) => l + '\n').join('');
+      fs.writeFileSync(tmpPath, content, 'utf-8');
       fs.renameSync(tmpPath, config.bufferPath);
     }
 
@@ -576,7 +722,13 @@ export function getBufferStats(config: BufferConfig = defaultConfig()): BufferSt
   try {
     bufferSize = fs.statSync(config.bufferPath).size;
   } catch {
-    // File doesn't exist
+    // AUDIT-OK(no_empty_catch): readBuffer() above already called
+    // readFileSync on this same path and would have thrown first on
+    // EACCES/EISDIR — the only way statSync gets here is ENOENT (buffer
+    // never written yet), so 0 bytes is the correct value, not a swallowed
+    // failure. This is why this site differs from getLogStats: there,
+    // fs.existsSync (which never throws) gates the read, so a stat/read
+    // failure there is a genuine, previously-unreported error.
   }
 
   return {

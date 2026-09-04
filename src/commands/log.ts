@@ -14,6 +14,77 @@ import {
 import { formatLogStatus } from '../display/formatters.js';
 
 /**
+ * Mutable state carried across `pollLogOnce` calls for one `log tail --follow`
+ * session. File-local to this command — not part of the logger's public
+ * surface.
+ */
+export interface PollState {
+  lastSize: number;
+  lastErrorCode?: string;
+}
+
+/**
+ * Read the bytes appended to `logPath` since `fromOffset`.
+ *
+ * @param logPath - Path to the log file
+ * @param fromOffset - Byte offset to read from (the previously known size)
+ * @returns The newly appended content and the file's current size. When the
+ *   file has not grown past `fromOffset`, returns `{ content: '', newSize: fromOffset }`.
+ */
+export function readAppendedBytes(logPath: string, fromOffset: number): { content: string; newSize: number } {
+  const currentSize = fs.statSync(logPath).size;
+  if (currentSize <= fromOffset) {
+    return { content: '', newSize: fromOffset };
+  }
+  const fd = fs.openSync(logPath, 'r');
+  try {
+    const newBytes = Buffer.alloc(currentSize - fromOffset);
+    fs.readSync(fd, newBytes, 0, newBytes.length, fromOffset);
+    return { content: newBytes.toString('utf-8'), newSize: currentSize };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Poll `logPath` once, emitting any newly appended lines via `emit` and
+ * mutating `state.lastSize` in place.
+ *
+ * - ENOENT (file deleted or mid-rotation) resets `state.lastSize` to 0, so
+ *   the next successful poll re-reads from the start of the new file.
+ * - Any other error (EISDIR, EACCES, ...) leaves `state.lastSize` unchanged
+ *   — we don't know how much of the file we've already seen — and writes
+ *   one stderr diagnostic naming the errno, suppressing repeats via
+ *   `state.lastErrorCode` so a persistent failure doesn't spam one line
+ *   per 500ms tick.
+ */
+export function pollLogOnce(logPath: string, state: PollState, emit: (line: string) => void): void {
+  try {
+    const { content, newSize } = readAppendedBytes(logPath, state.lastSize);
+    if (newSize > state.lastSize) {
+      content.split('\n').forEach((line) => {
+        if (line.trim()) emit(line);
+      });
+    }
+    state.lastSize = newSize;
+    state.lastErrorCode = undefined;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      state.lastSize = 0; // Reset on file deletion/rotation
+      state.lastErrorCode = undefined;
+      return;
+    }
+    if (state.lastErrorCode !== code) {
+      state.lastErrorCode = code ?? String(err);
+      process.stderr.write(
+        `agent-metrics: log tail poll failed for ${logPath}: ${state.lastErrorCode}\n`,
+      );
+    }
+  }
+}
+
+/**
  * Register log commands on the program.
  */
 export function registerLogCommands(program: Command): void {
@@ -41,6 +112,7 @@ export function registerLogCommands(program: Command): void {
         rotatedFiles: stats.rotatedFiles,
         oldestEntry: stats.oldestEntry,
         newestEntry: stats.newestEntry,
+        readError: stats.readError,
       }));
     });
 
@@ -63,11 +135,14 @@ export function registerLogCommands(program: Command): void {
         console.log(`Following ${config.logPath} (Ctrl+C to stop)...`);
         console.log('');
 
-        let lastSize = 0;
+        const state: PollState = { lastSize: 0 };
         try {
-          lastSize = fs.statSync(config.logPath).size;
+          state.lastSize = fs.statSync(config.logPath).size;
         } catch {
-          // File doesn't exist yet
+          // AUDIT-OK(no_empty_catch): initial statSync — file doesn't exist
+          // yet is the common case (log tail --follow started before the
+          // first entry is written). lastSize=0 self-corrects on the next
+          // poll tick once the file appears.
         }
 
         // Show existing content first
@@ -76,30 +151,7 @@ export function registerLogCommands(program: Command): void {
 
         // Watch for changes
         const interval = setInterval(() => {
-          try {
-            const currentSize = fs.statSync(config.logPath).size;
-            if (currentSize > lastSize) {
-              // Read only the new bytes appended since last check
-              const fd = fs.openSync(config.logPath, 'r');
-              let newContent: string;
-              try {
-                const newBytes = Buffer.alloc(currentSize - lastSize);
-                fs.readSync(fd, newBytes, 0, newBytes.length, lastSize);
-                newContent = newBytes.toString('utf-8');
-              } finally {
-                fs.closeSync(fd);
-              }
-              newContent.split('\n').forEach((line) => {
-                if (line.trim()) console.log(line);
-              });
-              lastSize = currentSize;
-            }
-          } catch (err) {
-            // File might not exist yet or was rotated
-            if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-              lastSize = 0; // Reset on file deletion/rotation
-            }
-          }
+          pollLogOnce(config.logPath, state, (line) => console.log(line));
         }, 500);
 
         process.on('SIGINT', () => {

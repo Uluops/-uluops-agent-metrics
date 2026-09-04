@@ -120,6 +120,17 @@ describe('Buffer Commands', () => {
       assert.deepStrictEqual(parsed, [], 'unknown token yields empty tracker output');
     });
 
+    it('Fix 5: -f tracker output excludes run_id (buffer-query key only, not part of the tracker save_run schema)', async () => {
+      appendToBuffer(createTestMetrics(), { runId: 'run-a' });
+      appendToBuffer(createTestMetrics(), { runId: 'run-b' });
+
+      await program.parseAsync(['node', 'test', 'buffer', 'list', '--run', 'run-a', '-f', 'tracker']);
+
+      const parsed = JSON.parse(output.join('\n'));
+      assert.strictEqual(parsed.length, 1, 'only the run-a entry should match');
+      assert.ok(!('run_id' in parsed[0]), 'tracker output must not carry run_id');
+    });
+
     it('should reject invalid --since format', async () => {
       try {
         await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', 'invalid']);
@@ -128,6 +139,28 @@ describe('Buffer Commands', () => {
         assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1');
         assert.ok(output.some(o => o.includes('Invalid')), 'Should show error message');
       }
+    });
+
+    it('issue 57cf9181: rejects a well-formed --since that overflows to an out-of-range Date', async () => {
+      try {
+        await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', '99999999999999999999m']);
+        assert.fail('Should have thrown');
+      } catch {
+        assert.strictEqual(harness.exitCode, 1, 'Should exit with code 1, not silently return the unfiltered list');
+        assert.ok(output.some(o => o.includes('Invalid')), 'Should show an error message');
+      }
+    });
+
+    it('control: --since 2h (well within range) still works', async () => {
+      await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', '2h']);
+
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error for valid, in-range duration');
+    });
+
+    it('control: --since 2400000000h (just under the h overflow threshold) is accepted', async () => {
+      await program.parseAsync(['node', 'test', 'buffer', 'list', '--since', '2400000000h']);
+
+      assert.strictEqual(harness.exitCode, null, 'Should not exit with error for a huge-but-still-valid-Date duration');
     });
 
     it('should accept --all flag for expired entries', async () => {
@@ -154,6 +187,17 @@ describe('Buffer Commands', () => {
       const jsonOutput = output.join('\n');
       const parsed = JSON.parse(jsonOutput);
       assert.ok(Array.isArray(parsed), 'Should output JSON array');
+    });
+
+    it('Fix 5: -f tracker output excludes run_id', async () => {
+      const metrics = createTestMetrics({ session_id: 'run-id-session' });
+      appendToBuffer(metrics, { runId: 'run-a' });
+
+      await program.parseAsync(['node', 'test', 'buffer', 'session', 'run-id-session', '-f', 'tracker']);
+
+      const parsed = JSON.parse(output.join('\n'));
+      assert.strictEqual(parsed.length, 1);
+      assert.ok(!('run_id' in parsed[0]), 'tracker output must not carry run_id');
     });
   });
 

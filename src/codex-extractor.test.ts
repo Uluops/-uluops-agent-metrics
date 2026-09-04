@@ -230,6 +230,28 @@ describe('Codex extractor', () => {
     assert.strictEqual(metrics.tokens.total_effective, 30);
   });
 
+  it('issue 96d880b1/0bac8c26: "no valid session records" error names the file path', async () => {
+    const filePath = path.join(TEST_DIR, 'no-session-meta.jsonl');
+    // Records present (turn_context, event_msg), but no session_meta record —
+    // buildMetrics throws on `!acc.sessionMeta` even though validRecordCount > 0.
+    fs.writeFileSync(filePath, [
+      record('turn_context', '2026-06-08T16:14:05.000Z', { model: 'gpt-5.5', cwd: '/test/project' }),
+      tokenCount('2026-06-08T16:14:12.000Z', {
+        input_tokens: 100, cached_input_tokens: 10, output_tokens: 20,
+        reasoning_output_tokens: 5, total_tokens: 125,
+      }),
+    ].join('\n'));
+
+    await assert.rejects(
+      () => extractCodexMetricsFromFile(filePath),
+      (err: unknown) => {
+        assert.ok(err instanceof Error, 'Rejection must be an Error');
+        assert.ok(err.message.includes(filePath), `Error message must name the file path:\n${err.message}`);
+        return true;
+      }
+    );
+  });
+
   it('finds Codex files by filename suffix without requiring date knowledge', async () => {
     const location = await findCodexAgentFile(AGENT_ID);
 
