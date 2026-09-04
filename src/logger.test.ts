@@ -238,6 +238,28 @@ describe('Logger Module', () => {
     });
   });
 
+  describe('File permissions (spec 05 — logger half)', () => {
+    function skipPerms(): boolean {
+      return process.getuid?.() === 0 || process.platform === 'win32';
+    }
+
+    it('creates the log file 0600 and a fresh log directory 0700', (t) => {
+      if (skipPerms()) { t.skip('mode bits are not enforced for root / on Windows'); return; }
+      const freshDir = path.join(TEST_DIR, 'perm-' + Date.now(), 'nested');
+      const logPath = path.join(freshDir, 'perm.log');
+      try {
+        configureLogger({ logPath, enabled: true, minLevel: 'info' });
+        info('permissions probe');
+        const fileMode = fs.statSync(logPath).mode & 0o777;
+        assert.strictEqual(fileMode, 0o600, `expected log mode 0600, got ${fileMode.toString(8)}`);
+        const dirMode = fs.statSync(freshDir).mode & 0o777;
+        assert.strictEqual(dirMode, 0o700, `expected log dir mode 0700, got ${dirMode.toString(8)}`);
+      } finally {
+        configureLogger({ logPath: TEST_LOG_PATH, enabled: true, minLevel: 'debug' });
+      }
+    });
+  });
+
   describe('getLoggerConfig', () => {
     it('should return a copy of the configuration', () => {
       const config1 = getLoggerConfig();

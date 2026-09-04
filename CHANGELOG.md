@@ -70,12 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `chmod` was added to any write path — this is deliberately
   defence-in-depth against incidental copying (backups, `tar`, sync
   clients) on a single-user machine, not a claim that a vulnerability
-  existed. **Scope note:** the log file/directory (`src/logger.ts`) carry
-  the same two write sites per the proposal and are intentionally
-  **not** included in this change — `logger.ts` was owned by a parallel
-  workstream at the time this landed; see README § Persistence for the
-  manual `chmod` command covering all state files including the log. See
-  proposal `05-state-file-permissions-proposal-v0_1_0.md`.
+  existed. The log file (`~/.claude/agent-metrics.log`) and its directory
+  get the same treatment: `0600` at creation and `0700` for a freshly
+  created directory. An existing log keeps its mode until rotation creates
+  a fresh file; README § Persistence gives the one-line manual hardening
+  for an existing installation. See proposal
+  `05-state-file-permissions-proposal-v0_1_0.md`.
 
 ### Removed
 

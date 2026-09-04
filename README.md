@@ -967,13 +967,13 @@ npm install -g @uluops/agent-metrics
 If you use `@uluops/setup`, rerun `npx @uluops/setup` to recreate its managed
 Claude hook files.
 
-**File permissions.** The buffer, lock, and GC-throttle marker files under
-`~/.claude/` are created with `0600` permissions (owner read/write only) as
-of this release; their parent directories with `0700`. This only applies to
-files created going forward — an existing buffer hardens itself
-automatically at its next rewrite (e.g. the next GC). To harden an existing
-installation by hand (this also covers the log file, whose permissions are
-unchanged by this release): `chmod 600 ~/.claude/agent-metrics-*`.
+**File permissions.** The buffer, lock, GC-throttle marker, and log files
+under `~/.claude/` are created with `0600` permissions (owner read/write
+only) as of this release; freshly created parent directories with `0700`.
+This only applies to files created going forward — an existing buffer
+hardens itself automatically at its next rewrite (e.g. the next GC), and an
+existing log at its next rotation. To harden an existing installation by
+hand: `chmod 600 ~/.claude/agent-metrics-*`.
 
 ## Future Enhancements
 

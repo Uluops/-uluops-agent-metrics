@@ -154,7 +154,10 @@ export function getLoggerConfig(): LoggerConfig {
 function ensureLogDir(): void {
   const dir = path.dirname(currentConfig.logPath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    // 0700: the log sits beside the buffer under ~/.claude, which Claude Code
+    // itself keeps at 0700 (spec 05). Applies at creation only; existing
+    // directories are never chmod'd.
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 
@@ -229,7 +232,10 @@ function writeLog(level: LogLevel, message: string, data?: Record<string, unknow
     rotateIfNeeded();
 
     const entry = formatLogEntry(level, message, data);
-    fs.appendFileSync(currentConfig.logPath, entry, 'utf-8');
+    // 0600 at creation, defence-in-depth against incidental copying (spec 05);
+    // `mode` is ignored on an existing file, so an old log keeps its mode
+    // until rotation creates a fresh one.
+    fs.appendFileSync(currentConfig.logPath, entry, { encoding: 'utf-8', mode: 0o600 });
   } catch (err) {
     // Log to stderr as fallback
     process.stderr.write(`Failed to write to log file: ${err instanceof Error ? err.message : 'unknown error'}\n`);
