@@ -295,4 +295,42 @@ describe('Codex extractor', () => {
     assert.ok(files.some(file => file.filePath === FILE_PATH));
     assert.ok(!files.some(file => file.filePath === parentPath));
   });
+
+  it('counts failed tool outputs across all four isFailedToolOutput branches', async () => {
+    const filePath = path.join(TEST_DIR, 'tool-output-errors.jsonl');
+    fs.writeFileSync(filePath, [
+      sessionMeta(),
+      // Branch A: top-level is_error === true
+      record('response_item', '2026-06-08T16:14:06.000Z', { type: 'function_call_output', is_error: true }),
+      // Branch B: top-level success === false
+      record('response_item', '2026-06-08T16:14:07.000Z', { type: 'custom_tool_call_output', success: false }),
+      // Branch C: nested is_error in a JSON string output
+      record('response_item', '2026-06-08T16:14:08.000Z', { type: 'function_call_output', output: '{"is_error":true}' }),
+      // Branch D: nested success === false in an object output
+      record('response_item', '2026-06-08T16:14:09.000Z', { type: 'function_call_output', output: { success: false } }),
+      // Negatives — successful outputs must NOT increment error_count
+      record('response_item', '2026-06-08T16:14:10.000Z', { type: 'function_call_output', output: '{"is_error":false}' }),
+      record('response_item', '2026-06-08T16:14:11.000Z', { type: 'custom_tool_call_output', success: true }),
+      record('event_msg', '2026-06-08T16:14:12.000Z', { type: 'task_complete', duration_ms: 1000 }),
+    ].join('\n'));
+
+    const metrics = await extractCodexMetricsFromFile(filePath);
+
+    // Exactly the four failing branches count; the two successful outputs do not.
+    assert.strictEqual(metrics.execution.error_count, 4);
+  });
+
+  it('counts task_failed and task_error event_msg records toward error_count', async () => {
+    const filePath = path.join(TEST_DIR, 'task-errors.jsonl');
+    fs.writeFileSync(filePath, [
+      sessionMeta(),
+      record('event_msg', '2026-06-08T16:14:06.000Z', { type: 'task_failed' }),
+      record('event_msg', '2026-06-08T16:14:07.000Z', { type: 'task_error' }),
+      record('event_msg', '2026-06-08T16:14:08.000Z', { type: 'task_complete', duration_ms: 1000 }),
+    ].join('\n'));
+
+    const metrics = await extractCodexMetricsFromFile(filePath);
+
+    assert.strictEqual(metrics.execution.error_count, 2);
+  });
 });
