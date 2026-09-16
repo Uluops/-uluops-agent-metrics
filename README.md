@@ -1,4 +1,4 @@
-**[UluOps](https://uluops.ai)** · Operating Intelligence as Infrastructure
+**[UluOps](https://uluops.ai)** · The operations layer for agentic work
 
 ---
 
