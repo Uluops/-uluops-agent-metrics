@@ -6,4 +6,5 @@ node_modules
 dist/
 docs/*
 !docs/decisions/
+!docs/metrics-contract-v2-proposal.md
 *-features*

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex structured tool results now recognize nonzero exit codes and MCP error
+  flags, including JSON text blocks emitted by code-mode. Each outer output
+  counts once; quoted stdout is not searched for failures.
+- Empty, partial and invalid Codex cumulative usage no longer overwrite the last
+  valid totals. Unobserved usage still follows the v1 zero fallback; the proposed
+  v2 observation contract covers that remaining limitation.
+- Project-filtered discovery applies relevance before limiting results, including
+  matches older than the former global candidate window.
+
+### Added
+
+- `extract --no-annotate-buffer` skips name write-back and buffer locking while
+  retaining supplied names in output.
+- [Proposed cross-harness metrics contract](docs/metrics-contract-v2-proposal.md)
+  with options for turn boundaries, deduplication, model attribution and storage.
+
 ## [0.10.0] - 2026-09-04
 
 ### Added

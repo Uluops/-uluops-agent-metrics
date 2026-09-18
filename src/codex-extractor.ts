@@ -60,7 +60,11 @@ function createAccumulator(): CodexAccumulator {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function safeNum(value: unknown): number {
@@ -91,7 +95,13 @@ function parseRecord(line: string): CodexRecord | null {
 function extractTokenUsage(payload: Record<string, unknown>): CodexTokenUsage | null {
   const info = asRecord(payload.info);
   const total = asRecord(info?.total_token_usage);
-  if (!total) return null;
+  // Empty/partial/malformed snapshots are not measured zero. Retain the last
+  // valid cumulative observation, just as when the totals object is absent.
+  if (!total || !isTokenCount(total.input_tokens) || !isTokenCount(total.output_tokens) ||
+      !isTokenCount(total.total_tokens)) return null;
+  for (const field of ['cached_input_tokens', 'reasoning_output_tokens']) {
+    if (total[field] !== undefined && !isTokenCount(total[field])) return null;
+  }
   return {
     input_tokens: safeNum(total.input_tokens),
     cached_input_tokens: safeNum(total.cached_input_tokens),
@@ -102,11 +112,29 @@ function extractTokenUsage(payload: Record<string, unknown>): CodexTokenUsage | 
 }
 
 function isFailedToolOutput(payload: Record<string, unknown>): boolean {
-  if (payload.is_error === true || payload.success === false) return true;
+  if (isFailureResult(payload)) return true;
   const output = payload.output;
+  // Codex code-mode returns text blocks containing JSON tool results. Count
+  // the outer output once even when multiple nested operations failed.
+  if (Array.isArray(output)) {
+    return output.some(value => {
+      const block = asRecord(value);
+      if (!block) return false;
+      if (isFailureResult(block)) return true;
+      if (block.type !== 'input_text' && block.type !== 'text') return false;
+      const parsed = typeof block.text === 'string' ? tryParseJson(block.text) : null;
+      return parsed !== null && isFailureResult(parsed);
+    });
+  }
   const parsed = typeof output === 'string' ? tryParseJson(output) : asRecord(output);
-  if (!parsed) return false;
-  return parsed.is_error === true || parsed.success === false;
+  return parsed !== null && isFailureResult(parsed);
+}
+
+function isFailureResult(result: Record<string, unknown>): boolean {
+  // Do not recurse into stdout or search prose for error words: a successful
+  // command may print error examples, source code, or another run's results.
+  return result.is_error === true || result.isError === true || result.success === false ||
+    (typeof result.exit_code === 'number' && Number.isInteger(result.exit_code) && result.exit_code !== 0);
 }
 
 function tryParseJson(value: string): Record<string, unknown> | null {

@@ -165,6 +165,9 @@ agent-metrics extract a7c642b a03c37d af0c1a1
 # Tracker-ready format (for mcp__uluops-tracker__update_run)
 agent-metrics extract a7c642b -f tracker --agent-name code-validator
 
+# Named extraction without buffer writes (useful in read-only sandboxes)
+agent-metrics extract a7c642b -f tracker --agent-name code-validator --no-annotate-buffer
+
 # Batch tracker format with named mapping
 agent-metrics extract a7c642b a03c37d af0c1a1 \
     -f tracker \
@@ -173,6 +176,10 @@ agent-metrics extract a7c642b a03c37d af0c1a1 \
 # Scope the search to one project path
 agent-metrics extract a80e24f -p ~/uluops/ops-uluops-api
 ```
+
+Named extraction normally annotates matching buffer entries with the supplied
+name. `--no-annotate-buffer` skips that write and its lock acquisition while
+preserving the name in the output. This works for single and batch extraction.
 
 ### Compare Multiple Agents
 
