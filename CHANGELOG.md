@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-17
+
 ### Fixed
 
 - Codex structured tool results now recognize nonzero exit codes and MCP error
@@ -22,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `extract --no-annotate-buffer` skips name write-back and buffer locking while
   retaining supplied names in output.
-- [Proposed cross-harness metrics contract](docs/metrics-contract-v2-proposal.md)
+- [Proposed cross-harness metrics contract](https://github.com/Uluops/-uluops-agent-metrics/blob/main/docs/metrics-contract-v2-proposal.md)
   with options for turn boundaries, deduplication, model attribution and storage.
 
 ## [0.10.0] - 2026-09-04
