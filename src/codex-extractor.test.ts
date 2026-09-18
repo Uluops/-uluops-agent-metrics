@@ -239,6 +239,40 @@ describe('Codex extractor', () => {
     assert.strictEqual(metrics.tokens.total_effective, 100 - 10 + 20); // 110, not 0
   });
 
+  it('preserves valid totals when a later observation is empty, partial, or invalid', async () => {
+    const filePath = path.join(TEST_DIR, 'invalid-usage.jsonl');
+    for (const bad of [{}, { input_tokens: 200 }, { input_tokens: -1, output_tokens: 20, total_tokens: 19 },
+      { input_tokens: 1.5, output_tokens: 20, total_tokens: 21.5 },
+      { input_tokens: null, output_tokens: 20, total_tokens: 20 }]) {
+      fs.writeFileSync(filePath, [sessionMeta(),
+        tokenCount('2026-06-08T16:14:06.000Z', { input_tokens: 100, output_tokens: 20, total_tokens: 120 }),
+        record('event_msg', '2026-06-08T16:14:07.000Z', { type: 'token_count', info: { total_token_usage: bad } }),
+      ].join('\n'));
+      const metrics = await extractCodexMetricsFromFile(filePath);
+      assert.strictEqual(metrics.tokens.input, 100);
+      assert.strictEqual(metrics.tokens.total_raw, 120);
+    }
+  });
+
+  it('counts a failed structured output once, without treating quoted stdout as failure', async () => {
+    const filePath = path.join(TEST_DIR, 'structured-output-errors.jsonl');
+    const outputs: unknown[] = [
+      [{ type: 'input_text', text: 'Script completed\nOutput:\n' },
+        { type: 'input_text', text: JSON.stringify({ exit_code: 7, output: '' }) },
+        { type: 'input_text', text: JSON.stringify({ exit_code: 2, output: '' }) }],
+      JSON.stringify({ exit_code: 1, output: '' }),
+      { exit_code: -1, output: '' },
+      { isError: true, content: [{ type: 'text', text: 'failed' }] },
+      [{ type: 'input_text', text: JSON.stringify({ exit_code: 0, output: '{"exit_code":7}' }) }],
+      { exit_code: null, session_id: 123 },
+      'Documentation mentions exit_code: 7',
+    ];
+    fs.writeFileSync(filePath, [sessionMeta(), ...outputs.map(output =>
+      record('response_item', '2026-06-08T16:14:06.000Z', { type: 'custom_tool_call_output', output }))].join('\n'));
+    const metrics = await extractCodexMetricsFromFile(filePath);
+    assert.strictEqual(metrics.execution.error_count, 4);
+  });
+
   it('clamps Codex total_effective at zero when cached_input exceeds input (issue 7ecac2a3)', async () => {
     const filePath = path.join(TEST_DIR, 'clamp.jsonl');
     fs.writeFileSync(filePath, [

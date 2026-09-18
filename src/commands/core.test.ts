@@ -213,6 +213,26 @@ describe('Core Commands', () => {
       assert.ok(!textOutput.includes('fff9999'), 'Older Claude run should be excluded by limit');
     });
 
+    for (const provider of ['claude', 'codex', 'auto']) {
+      it(`finds older matching projects beyond the global window (${provider})`, async () => {
+        const files: string[] = [];
+        try {
+          for (let i = 0; i < 101; i++) {
+            const claudePath = path.join(OTHER_PROJECT_DIR, `agent-a${i.toString(16).padStart(6, '0')}.jsonl`);
+            const codexPath = path.join(CODEX_SESSIONS_DIR, `rollout-2026-06-08T16-14-05-019eaa28-8e2d-73a2-840f-${i.toString(16).padStart(12, '0')}.jsonl`);
+            fs.writeFileSync(claudePath, createAgentJSONL(`a${i.toString(16).padStart(6, '0')}`, 'noise'));
+            fs.writeFileSync(codexPath, createCodexJSONL().replaceAll('/test/project', '/unrelated/work'));
+            files.push(claudePath, codexPath);
+          }
+          const project = provider === 'claude' ? 'test-project' : '/test/project';
+          await program.parseAsync(['node', 'test', 'list', '--provider', provider, '--project', project, '--limit', '1']);
+          assert.ok(output.join('\n').includes(provider === 'claude' ? 'def5678' : CODEX_AGENT_ID));
+        } finally {
+          for (const file of files) fs.unlinkSync(file);
+        }
+      });
+    }
+
     it('should apply --project filter to recent list results', async () => {
       await program.parseAsync(['node', 'test', 'list', '--provider', 'claude', '--project', 'other-project']);
 
@@ -295,6 +315,14 @@ describe('Core Commands', () => {
     beforeEach(() => {
       // Remove any leftover buffer file from prior test
       try { fs.unlinkSync(TEST_BUFFER_CONFIG.bufferPath); } catch { /* ok */ }
+    });
+
+    it('keeps named extraction read-only with --no-annotate-buffer', async () => {
+      appendToBuffer(createTestMetrics({ agent_id: 'abc1234' }), { config: TEST_BUFFER_CONFIG });
+      const before = fs.readFileSync(TEST_BUFFER_CONFIG.bufferPath, 'utf8');
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'code-validator', '--no-annotate-buffer']);
+      assert.strictEqual(JSON.parse(output.join('\n')).name, 'code-validator');
+      assert.strictEqual(fs.readFileSync(TEST_BUFFER_CONFIG.bufferPath, 'utf8'), before);
     });
 
     it('F7: -a <name> writes the name back to a matching buffer entry', async () => {

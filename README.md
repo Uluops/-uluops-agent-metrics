@@ -8,7 +8,7 @@ Extract accurate, normalized metrics from agent session files across coding harn
 
 ## Overview
 
-Coding harnesses each record detailed execution data for every agent invocation, in their own on-disk format. This utility reads those formats and normalizes them into one shape — accurate token counts, timing, and execution statistics — so metrics are comparable across harnesses regardless of which one produced them. Each record carries a `harness` field identifying its origin.
+Coding harnesses record execution data in their own on-disk formats. This utility reads those formats and normalizes token counts, timing, and execution statistics into a shared shape. Each record carries a `harness` field identifying its origin; the available observations and counter meanings still depend on the harness.
 
 **Supported harnesses:**
 
@@ -17,6 +17,19 @@ Coding harnesses each record detailed execution data for every agent invocation,
 - **Planned** — Gemini CLI and OpenCode. The extractor architecture is harness-agnostic (a per-harness reader feeding a shared normalizer), so adding a harness does not change the public output shape.
 
 Harness selection is per-command via `--provider auto|claude|codex` (default `auto` detects the harness from the agent ID). The normalized output and the tracker wire format are identical across harnesses; harness-specific token components (e.g. Codex `cached_input`, `reasoning_output`) are carried as additive optional fields.
+
+### Current measurement limits
+
+Codex extraction reads a cumulative session snapshot. Reusing an agent for a
+follow-up includes earlier work in its totals; repeated captures are not separate
+executions and should not be summed. Turn-scoped execution IDs and capture
+deduplication remain proposed work, not features of this release.
+
+Missing Codex token usage still falls back to zero in the current output contract.
+A zero therefore does not prove that no tokens were used. Malformed later usage
+records retain the last valid cumulative totals. Tool counts describe recorded
+calls, and Codex error counts recognize structured failure results; they are not
+a guarantee that every failed operation was observed.
 
 ## Prerequisites
 
@@ -165,6 +178,9 @@ agent-metrics extract a7c642b a03c37d af0c1a1
 # Tracker-ready format (for mcp__uluops-tracker__update_run)
 agent-metrics extract a7c642b -f tracker --agent-name code-validator
 
+# Named extraction without buffer writes (useful in read-only sandboxes)
+agent-metrics extract a7c642b -f tracker --agent-name code-validator --no-annotate-buffer
+
 # Batch tracker format with named mapping
 agent-metrics extract a7c642b a03c37d af0c1a1 \
     -f tracker \
@@ -173,6 +189,10 @@ agent-metrics extract a7c642b a03c37d af0c1a1 \
 # Scope the search to one project path
 agent-metrics extract a80e24f -p ~/uluops/ops-uluops-api
 ```
+
+Named extraction normally annotates matching buffer entries with the supplied
+name. `--no-annotate-buffer` skips that write and its lock acquisition while
+preserving the name in the output. This works for single and batch extraction.
 
 ### Compare Multiple Agents
 
@@ -665,7 +685,7 @@ Run `agent-metrics examples` for a built-in usage guide covering common workflow
 | `status` | Show buffer statistics (alias for `buffer status`) |
 | `report [-n limit] [-s session] [--current] [--provider auto|claude|codex]` | Show recent Claude-buffer auto-captured metrics; `codex` exits with guidance because report is buffer-backed |
 | `list [-n <limit>] [-p project] [--provider auto|claude|codex]` | List recent agent runs from session files |
-| `extract <ids...> [-p project] [-f format] [--json] [-a agent-name] [--agent-names names] [--provider auto|claude|codex]` | Extract metrics for one or more agents |
+| `extract <ids...> [-p project] [-f format] [--json] [-a agent-name] [--agent-names names] [--no-annotate-buffer] [--provider auto|claude|codex]` | Extract metrics for one or more agents; optionally skip buffer name write-back and locking |
 | `compare <id...> [-p project] [--provider auto|claude|codex]` | Compare multiple agents side-by-side (`auto` resolves each id's harness independently, so a mixed Claude+Codex comparison works) |
 | `find <id> [-p project] [--provider auto|claude|codex]` | Find the file location for an agent |
 | `reconcile --run <token> --expect <n> [-p project] [-f format] [-a]` (v0.10.0) | Verify every agent expected in a `--run <token>` was attributed; moves ADR-0004's count-check into this artifact. Exit codes: `0` = attributed matches or exceeds expected (over-collection is benign, reported on stderr); `1` = shortfall (attributed < expected — likely a dropped `[run:]` tag); `2` = usage error (missing/malformed `--run` or `--expect`), deliberately distinct from `1` so a mistyped flag can't read as a passing check |

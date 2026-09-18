@@ -69,7 +69,9 @@ async function sortFilterLimitFiles(
 }
 
 async function findRecentFiles(provider: MetricsProvider, limit: number, project?: string): Promise<AgentFileLocation[]> {
-  const scanLimit = project ? Math.max(limit * 10, 100) : limit;
+  // Both scanners already traverse the full tree. Do not discard older
+  // candidates before applying the requested project predicate.
+  const scanLimit = project ? Number.POSITIVE_INFINITY : limit;
   if (provider === 'claude') return sortFilterLimitFiles(await findRecentAgentFiles(scanLimit), limit, project);
   if (provider === 'codex') return sortFilterLimitFiles(await findRecentCodexAgentFiles(scanLimit), limit, project);
 
@@ -99,8 +101,9 @@ export function registerCoreCommands(program: Command): void {
     .option('--json', 'Shorthand for -f json')
     .option('-a, --agent-name <name>', 'Agent name for tracker format (single agent)')
     .option('--agent-names <names>', 'Comma-separated agent names for tracker format (batch)')
+    .option('--no-annotate-buffer', 'Skip persisting supplied agent names to the buffer')
     .addOption(providerOption())
-    .action(async (agentIds: string[], options: { project?: string; format: ExtractFormat; json?: boolean; agentName?: string; agentNames?: string; provider: MetricsProvider }) => {
+    .action(async (agentIds: string[], options: { project?: string; format: ExtractFormat; json?: boolean; agentName?: string; agentNames?: string; annotateBuffer: boolean; provider: MetricsProvider }) => {
       try {
         const format = options.json ? 'json' : options.format;
         const nameList = options.agentNames?.split(',').map(n => n.trim());
@@ -156,7 +159,7 @@ export function registerCoreCommands(program: Command): void {
         // Write caller-supplied names back to the buffer so entries captured
         // nameless (no [agent:name] tag) become name-complete for later
         // queries. Best-effort: annotation failure must not fail the extract.
-        if (Object.keys(suppliedNames).length > 0) {
+        if (options.annotateBuffer && Object.keys(suppliedNames).length > 0) {
           try {
             annotateBufferEntries(suppliedNames);
           } catch (err) {
