@@ -477,11 +477,37 @@ function parseBufferContent(content: string): { entries: BufferEntry[]; quaranti
 export function readBuffer(config: BufferConfig = defaultConfig()): BufferEntry[] {
   const spilled = readSpill(config);
   if (!fs.existsSync(config.bufferPath)) {
-    return spilled;
+    return latestPerAgent(spilled);
   }
 
   const content = fs.readFileSync(config.bufferPath, 'utf-8');
-  return [...parseBufferContent(content).entries, ...spilled];
+  return latestPerAgent([...parseBufferContent(content).entries, ...spilled]);
+}
+
+/**
+ * One entry per agent instance: the latest capture wins (tracker 74629040).
+ *
+ * SubagentStop fires each time a subagent stops, and the harness re-wakes agents — a
+ * "[handback-send-enforce]" reminder when the report was not delivered through
+ * SubagentHandback, "[Your previous response had no visible output…]" after a
+ * thinking-only turn. Each stop appended an entry, so one agent appeared several times:
+ * `-f tracker` then double-counted it, or save_run refused the duplicate name. The
+ * earlier captures are partial views of the same run (measured 2026-10-04: 188 of the
+ * final 523 output tokens). `agent_id` identifies the instance; the entry with the latest
+ * `end_time` (then latest `captured_at`) is the complete one. Order of first appearance
+ * is kept. The file itself is untouched — the collapse happens on read.
+ */
+export function latestPerAgent(entries: readonly BufferEntry[]): BufferEntry[] {
+  const best = new Map<string, BufferEntry>();
+  const order: string[] = [];
+  for (const e of entries) {
+    const prev = best.get(e.agent_id);
+    if (!prev) { best.set(e.agent_id, e); order.push(e.agent_id); continue; }
+    const later = (e.end_time ?? '') > (prev.end_time ?? '')
+      || ((e.end_time ?? '') === (prev.end_time ?? '') && e.captured_at > prev.captured_at);
+    if (later) best.set(e.agent_id, e);
+  }
+  return order.map(id => best.get(id)!);
 }
 
 // ── Spill (X4-4) ────────────────────────────────────────────────────────
@@ -999,6 +1025,40 @@ export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerAgentForm
     ...(definitionVersion !== undefined ? { definition_version: definitionVersion } : {}),
   };
   });
+}
+
+// ── Refresh from transcripts (74629040) ─────────────────────────────────
+
+/**
+ * Re-extract each entry's metrics from its transcript when the transcript still exists,
+ * keeping the refreshed metrics only when they cover at least as much of the run
+ * (`end_time` not earlier). The SubagentStop capture can miss the final assistant
+ * message (tracker 74629040); the transcript is the source of truth, so tracker output
+ * built for `save_run` should come from it whenever it is available. Entries whose
+ * transcript is gone (expired, codex ids, other machines) are returned unchanged.
+ */
+export async function refreshEntriesFromTranscripts(
+  entries: readonly BufferEntry[],
+  deps: {
+    find?: (agentId: string, projectPath?: string) => { filePath: string } | null;
+    extract?: (filePath: string) => Promise<AgentMetrics>;
+  } = {},
+): Promise<BufferEntry[]> {
+  const find = deps.find ?? (await import('./utils.js')).findAgentFile;
+  const extract = deps.extract ?? (await import('./extractor.js')).extractMetricsFromFile;
+  const out: BufferEntry[] = [];
+  for (const e of entries) {
+    try {
+      const loc = find(e.agent_id, e.project_path);
+      if (!loc) { out.push(e); continue; }
+      const fresh = await extract(loc.filePath);
+      const covers = !e.end_time || (fresh.end_time ?? '') >= e.end_time;
+      out.push(covers ? { ...e, metrics: { ...fresh, agent_id: e.agent_id } } : e);
+    } catch {
+      out.push(e);
+    }
+  }
+  return out;
 }
 
 // ── Capture counters (X4-5) ─────────────────────────────────────────────

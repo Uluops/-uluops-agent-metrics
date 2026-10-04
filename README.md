@@ -175,7 +175,9 @@ agent-metrics extract 019eaa28-8e2d-73a2-840f-a00d6cc8795f --provider codex
 # Multiple agents (batch) — outputs JSON array
 agent-metrics extract a7c642b a03c37d af0c1a1
 
-# Tracker-ready format (for mcp__uluops-tracker__update_run)
+# Tracker-ready format (for mcp__uluops-tracker__update_run).
+# `buffer list -f tracker` re-extracts each entry from its transcript when the transcript
+# still exists (v0.12.0): the hook's capture can miss the agent's final message (74629040).
 agent-metrics extract a7c642b -f tracker --agent-name code-validator
 
 # Named extraction without buffer writes (useful in read-only sandboxes)

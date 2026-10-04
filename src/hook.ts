@@ -309,6 +309,45 @@ export async function detectAgentName(transcriptPath: string): Promise<string | 
  *   path (issue c3234628) without racing a real lock file.
  */
 /**
+ * Wait until a transcript stops growing (tracker 74629040).
+ *
+ * Claude Code timestamps a message when it creates it but writes the transcript
+ * asynchronously, and SubagentStop can fire before the final assistant message is on
+ * disk. Measured 2026-10-04: in 3 of 4 live agents the last assistant line was
+ * timestamped ~100 ms before the hook ran yet absent from the hook's read, so the buffer
+ * entry undercounted output tokens 6–10× against a later `extract`. The flush is not
+ * deferred until after the hook (a fourth agent's read caught it), so a short wait for
+ * a stable size closes the race. Bounded by `maxMs` so a slow disk cannot hang
+ * SubagentStop; `buffer list -f tracker` re-extracts from the transcript as a second net.
+ */
+export async function waitForStableFile(
+  file: string,
+  opts: { intervalMs?: number; stableMs?: number; maxMs?: number } = {},
+  deps: { sleep?: (ms: number) => Promise<void>; size?: (f: string) => number; now?: () => number } = {},
+): Promise<{ stable: boolean; waitedMs: number }> {
+  const intervalMs = opts.intervalMs ?? 100;
+  const stableMs = opts.stableMs ?? 500;
+  const maxMs = opts.maxMs ?? 3000;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const size = deps.size ?? ((f: string) => fs.statSync(f).size);
+  const now = deps.now ?? Date.now;
+  const start = now();
+  let last = size(file);
+  let unchangedSince = now();
+  while (now() - start < maxMs) {
+    await sleep(intervalMs);
+    const current = size(file);
+    if (current !== last) {
+      last = current;
+      unchangedSince = now();
+    } else if (now() - unchangedSince >= stableMs) {
+      return { stable: true, waitedMs: now() - start };
+    }
+  }
+  return { stable: false, waitedMs: now() - start };
+}
+
+/**
  * SubagentStart: record the definition the subagent was spawned with (X4-1). Claude Code
  * loads the full definition at spawn, so this is the moment that names what will run.
  * Never throws and never blocks the spawn.
@@ -369,6 +408,7 @@ export async function handleHook(
     appendToBuffer?: typeof appendToBuffer;
     definitionDirs?: DefinitionDir[];
     spawnFile?: string;
+    waitForStable?: typeof waitForStableFile;
   } = {}
 ): Promise<HookOutput> {
   const readFirstMessage = deps.readFirstMessage ?? getFirstUserMessageContent;
@@ -423,6 +463,9 @@ export async function handleHook(
     // one resolved path, closing the TOCTOU window a post-check symlink swap
     // would otherwise open (CWE-367). realpathSync also already confirmed the
     // path exists, so the prior existsSync check is redundant and removed.
+    // 74629040: let the final assistant message reach disk before reading.
+    const settled = await (deps.waitForStable ?? waitForStableFile)(realPath);
+    if (!settled.stable) debug('transcript still growing at the wait cap', { waitedMs: settled.waitedMs });
     const metrics = await extractMetricsFromFile(realPath);
 
     // Enforce the join-key invariant at the persistence boundary: the id

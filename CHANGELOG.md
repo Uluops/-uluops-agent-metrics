@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`agent-metrics status`** reports definition-capture counters (with version, causes, no agent name, pre-capture, spilled), so a harness that stops sending `agent_type` shows up as a number.
   - **Setup:** add a `SubagentStart` hook entry with the same command as `SubagentStop`. Without it, capture falls back to stop time (`captured_at: "stop"`).
 
+### Fixed
+
+- **The hook no longer undercounts the agent's final turn** (tracker 74629040). Claude Code timestamps a message when it creates it but writes the transcript asynchronously, and SubagentStop can fire before the final assistant message reaches disk. Measured live on 2026-10-04: in 3 of 4 agents the buffer entry missed the last assistant line, undercounting output tokens 6–10× against a later `extract`. Orchestrators splice `buffer list -f tracker` into `save_run`, so tracker token figures were low.
+  - The hook now waits for the transcript to stop growing before reading it: it checks every 100 ms, reads after 500 ms unchanged, and gives up waiting at 3 s.
+  - **One entry per agent instance.** SubagentStop fires each time a subagent stops, and Claude Code re-wakes agents: a `[handback-send-enforce]` reminder when the report was not delivered through SubagentHandback, and a "no visible output" nudge after a thinking-only turn. Each stop appended an entry, so a re-woken agent appeared more than once. `-f tracker` then double-counted it, or `save_run` refused the duplicate name. Reads (`readBuffer`, and everything built on it) now collapse to the latest capture per `agent_id`. The earlier captures are partial views of the same run; the file keeps every line.
+  - **`buffer list -f tracker` and `buffer session -f tracker` re-extract from the transcript** when it still exists. They keep the refreshed metrics only when the transcript covers at least as much of the run (`end_time` not earlier), so the spliced figures come from the source of truth even when the hook loses the race.
+
 ### Changed
 
 - **A contended buffer write is spilled, not dropped** (checklist X4-4). When the lock cannot be acquired after the 5 s backoff, `appendToBuffer` writes the entry to its own file under `<buffer>.spill/` and returns it. `readBuffer` includes spilled entries, and the next locked append drains them into the buffer. Previously the entry was skipped and its tokens lost. The buffer file is still never appended without the lock. `appendToBuffer` returns `null` only if the spill itself fails.
