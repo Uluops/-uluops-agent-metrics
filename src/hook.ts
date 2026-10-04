@@ -29,6 +29,9 @@ import { extractMetricsFromFile } from './extractor.js';
 import { appendToBuffer } from './buffer.js';
 import { debug, warn } from './logger.js';
 import { formatModelName } from './utils.js';
+import { confirmAtStop, defaultDefinitionDirs, resolveDefinition, type DefinitionDir } from './definition.js';
+import { defaultSpawnPath, findSpawn, recordSpawn } from './spawns.js';
+import type { BufferDefinition } from './buffer.js';
 
 interface HookInput {
   session_id: string;
@@ -44,6 +47,8 @@ interface HookInput {
   agent_type?: string;
   cwd: string;
   hook_event_name?: string;
+  /** SubagentStart only: the spawning tool call. */
+  tool_use_id?: string;
   permission_mode?: string;
   stop_hook_active?: boolean;
 }
@@ -73,6 +78,8 @@ export function parseHookInput(parsed: unknown): Partial<HookInput> {
   if (typeof obj.transcript_path === 'string') result.transcript_path = obj.transcript_path;
   if (typeof obj.agent_transcript_path === 'string') result.agent_transcript_path = obj.agent_transcript_path;
   if (typeof obj.agent_id === 'string') result.agent_id = obj.agent_id;
+  if (typeof obj.hook_event_name === 'string') result.hook_event_name = obj.hook_event_name;
+  if (typeof obj.tool_use_id === 'string') result.tool_use_id = obj.tool_use_id;
   if (typeof obj.agent_type === 'string') {
     // Strip control characters (including newlines that would split JSONL lines)
     // and cap length before persisting to the buffer.
@@ -301,11 +308,118 @@ export async function detectAgentName(transcriptPath: string): Promise<string | 
  *   appendToBuffer). Exists so tests can force the lock-contention/null-return
  *   path (issue c3234628) without racing a real lock file.
  */
+/**
+ * Wait until a transcript stops growing (tracker 74629040).
+ *
+ * Claude Code timestamps a message when it creates it but writes the transcript
+ * asynchronously, and SubagentStop can fire before the final assistant message is on
+ * disk. Measured 2026-10-04: in 3 of 4 live agents the last assistant line was
+ * timestamped ~100 ms before the hook ran yet absent from the hook's read, so the buffer
+ * entry undercounted output tokens 6–10× against a later `extract`. The flush is not
+ * deferred until after the hook (a fourth agent's read caught it), so a short wait for
+ * a stable size closes the race. Bounded by `maxMs` so a slow disk cannot hang
+ * SubagentStop; `buffer list -f tracker` re-extracts from the transcript as a second net.
+ */
+export async function waitForStableFile(
+  file: string,
+  opts: { intervalMs?: number; stableMs?: number; maxMs?: number } = {},
+  deps: { sleep?: (ms: number) => Promise<void>; size?: (f: string) => number; now?: () => number } = {},
+): Promise<{ stable: boolean; waitedMs: number }> {
+  const intervalMs = opts.intervalMs ?? 100;
+  const stableMs = opts.stableMs ?? 500;
+  const maxMs = opts.maxMs ?? 3000;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const size = deps.size ?? ((f: string) => fs.statSync(f).size);
+  const now = deps.now ?? Date.now;
+  const start = now();
+  let last = size(file);
+  let unchangedSince = now();
+  while (now() - start < maxMs) {
+    await sleep(intervalMs);
+    const current = size(file);
+    if (current !== last) {
+      last = current;
+      unchangedSince = now();
+    } else if (now() - unchangedSince >= stableMs) {
+      return { stable: true, waitedMs: now() - start };
+    }
+  }
+  return { stable: false, waitedMs: now() - start };
+}
+
+/**
+ * SubagentStart: record the definition the subagent was spawned with (X4-1). Claude Code
+ * loads the full definition at spawn, so this is the moment that names what will run.
+ * Never throws and never blocks the spawn.
+ */
+export function handleSubagentStart(
+  input: Partial<HookInput>,
+  deps: { definitionDirs?: DefinitionDir[]; spawnFile?: string; nowMs?: number } = {},
+): void {
+  try {
+    // Same id, same validation as the stop path (handleHook): the join key must match.
+    if (!input.agent_id || !isValidAgentId(input.agent_id)) return;
+    const resolution = resolveDefinition(input.agent_type, deps.definitionDirs ?? defaultDefinitionDirs(input.cwd));
+    const ok = recordSpawn({
+      agent_id: input.agent_id,
+      agent_type: input.agent_type ?? null,
+      spawned_at_ms: deps.nowMs ?? Date.now(),
+      definition: resolution.ok ? resolution.definition : null,
+      unresolved: resolution.ok ? null : resolution.cause,
+    }, deps.spawnFile ?? defaultSpawnPath());
+    if (!ok) console.error('[agent-metrics] Could not record spawn (lock contention); stop will capture from disk');
+  } catch (err) {
+    console.error(`[agent-metrics] SubagentStart error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * The definition to attach at SubagentStop (X4-1): the spawn capture, confirmed unchanged;
+ * or a stop-time capture when no spawn was recorded; or nothing, with a cause. An
+ * `[agent:name]` tag naming a different definition than the one that ran omits it.
+ */
+export function definitionAtStop(
+  agentId: string,
+  agentType: string | undefined,
+  explicitTag: string | null,
+  deps: { definitionDirs?: DefinitionDir[]; spawnFile?: string; cwd?: string; startedAtMs?: number } = {},
+): { definition?: BufferDefinition; definitionUnresolved?: string } {
+  // Never let definition capture cost the metrics capture: any failure here degrades to
+  // an omitted version with a cause (2026-10-04 review).
+  try {
+    if (explicitTag && agentType && explicitTag !== agentType) return { definitionUnresolved: 'tag-mismatch' };
+    const spawn = findSpawn(agentId, deps.spawnFile ?? defaultSpawnPath());
+    if (spawn && !spawn.definition) return { definitionUnresolved: spawn.unresolved ?? 'no-file' };
+    const atStop = resolveDefinition(agentType, deps.definitionDirs ?? defaultDefinitionDirs(deps.cwd));
+    const out = confirmAtStop(
+      spawn?.definition ? { definition: spawn.definition, spawnedAtMs: spawn.spawned_at_ms } : null,
+      atStop,
+      deps.startedAtMs,
+    );
+    if (!out.definition || out.definition.version === null) return { definitionUnresolved: out.cause ?? 'no-version' };
+    return {
+      definition: {
+        name: out.definition.name,
+        version: out.definition.version,
+        sha256: out.definition.sha256,
+        path: out.definition.path,
+        captured_at: out.capturedAt,
+      },
+    };
+  } catch (err) {
+    console.error(`[agent-metrics] definition capture failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { definitionUnresolved: 'capture-error' };
+  }
+}
+
 export async function handleHook(
   input: Partial<HookInput>,
   deps: {
     readFirstMessage?: typeof getFirstUserMessageContent;
     appendToBuffer?: typeof appendToBuffer;
+    definitionDirs?: DefinitionDir[];
+    spawnFile?: string;
+    waitForStable?: typeof waitForStableFile;
   } = {}
 ): Promise<HookOutput> {
   const readFirstMessage = deps.readFirstMessage ?? getFirstUserMessageContent;
@@ -360,6 +474,9 @@ export async function handleHook(
     // one resolved path, closing the TOCTOU window a post-check symlink swap
     // would otherwise open (CWE-367). realpathSync also already confirmed the
     // path exists, so the prior existsSync check is redundant and removed.
+    // 74629040: let the final assistant message reach disk before reading.
+    const settled = await (deps.waitForStable ?? waitForStableFile)(realPath);
+    if (!settled.stable) debug('transcript still growing at the wait cap', { waitedMs: settled.waitedMs });
     const metrics = await extractMetricsFromFile(realPath);
 
     // Enforce the join-key invariant at the persistence boundary: the id
@@ -382,8 +499,14 @@ export async function handleHook(
 
     // Resolve agent name: explicit [agent:name] tag (workflow-emitted intent)
     // wins over the harness-reported agent_type, which wins over nameless.
-    const agentName =
-      (firstMsg && extractExplicitAgentTag(firstMsg)) || input.agent_type || null;
+    const explicitTag = firstMsg ? extractExplicitAgentTag(firstMsg) : null;
+    const agentName = explicitTag || input.agent_type || null;
+
+    // X4-1: the definition that ran, confirmed against the spawn capture.
+    const captured = definitionAtStop(agentId, input.agent_type, explicitTag, {
+      definitionDirs: deps.definitionDirs, spawnFile: deps.spawnFile, cwd: input.cwd,
+      startedAtMs: Date.parse(metrics.start_time),
+    });
 
     // Resolve run token: explicit [run:token] tag minted by the orchestrator.
     // Absent when the prompt carried no [run:] tag (same absence semantics as
@@ -404,6 +527,8 @@ export async function handleHook(
       projectPath: input.cwd,
       runId: runId || undefined,
       source: 'hook',
+      definition: captured.definition,
+      definitionUnresolved: captured.definitionUnresolved,
     });
 
     if (appended !== null) {
@@ -530,6 +655,12 @@ async function main(): Promise<void> {
     }
 
     const input = parseHookInput(parsed);
+
+    // SubagentStart (X4-1): record the spawn-time definition; emit nothing, block nothing.
+    if (input.hook_event_name === 'SubagentStart') {
+      handleSubagentStart(input);
+      return;
+    }
 
     // Handle the hook
     const output = await handleHook(input);

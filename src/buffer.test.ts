@@ -14,6 +14,7 @@ import {
   annotateBufferEntries,
   appendToBuffer,
   readBuffer,
+  readSpill,
   readValidEntries,
   queryBuffer,
   getLatestForSession,
@@ -110,6 +111,9 @@ describe('Buffer Module', () => {
     } catch {
       // File doesn't exist, that's fine
     }
+    // X4-4: spilled entries live beside the buffer and are part of readBuffer.
+    fs.rmSync(TEST_CONFIG.bufferPath + '.spill', { recursive: true, force: true });
+    fs.rmSync(TEST_CONFIG_FAST_LOCK.bufferPath + '.spill', { recursive: true, force: true });
     try {
       fs.unlinkSync(TEST_CONFIG.bufferPath + '.lock');
     } catch {
@@ -869,20 +873,28 @@ describe('Buffer Module', () => {
       try {
         // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing.
         // The lock is fresh (not stale), so it won't be removed; acquisition
-        // times out and appendToBuffer fails closed — it skips the write rather
-        // than racing an unlocked append that could corrupt the buffer.
+        // times out. The buffer file is never appended unlocked (no corruption),
+        // and since v0.12.0 (checklist X4-4) the entry is spilled, not dropped.
+        // Control: the pre-0.12.0 skip returned null and lost the entry.
         const metrics = createTestMetrics();
         const result = appendToBuffer(metrics, { config: TEST_CONFIG_FAST_LOCK });
 
-        // Entry should NOT be written, and the call returns null to signal the skip.
-        assert.strictEqual(result, null, 'Should return null when the append is skipped');
-        const entries = readBuffer(TEST_CONFIG_FAST_LOCK);
-        assert.strictEqual(entries.length, 0, 'Entry should be skipped, not raced, under lock contention');
+        assert.ok(result, 'the entry is kept (spilled), not dropped');
+        assert.ok(!fs.existsSync(TEST_CONFIG_FAST_LOCK.bufferPath) || !fs.readFileSync(TEST_CONFIG_FAST_LOCK.bufferPath, 'utf-8').includes(metrics.agent_id),
+          'the buffer file is never appended without the lock');
+        assert.deepStrictEqual(readBuffer(TEST_CONFIG_FAST_LOCK).map(e => e.agent_id), [metrics.agent_id], 'reads include the spilled entry');
         assert.ok(warningLogged, 'Should log a warning about lock acquisition failure');
       } finally {
         process.stderr.write = originalWrite;
         try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
       }
+
+      // The next locked append drains the spill into the buffer, exactly once.
+      const second = createTestMetrics();
+      appendToBuffer(second, { config: TEST_CONFIG_FAST_LOCK });
+      const ids = readBuffer(TEST_CONFIG_FAST_LOCK).map(e => e.agent_id);
+      assert.strictEqual(ids.length, 2, `drained once, not duplicated: ${ids.join(',')}`);
+      assert.strictEqual(readSpill(TEST_CONFIG_FAST_LOCK).length, 0, 'the spill is empty after the drain');
     });
 
     it('should remove stale lock older than 30 seconds', () => {
@@ -928,14 +940,12 @@ describe('Buffer Module', () => {
       try {
         // Uses TEST_CONFIG_FAST_LOCK with 100ms timeout for fast testing.
         // A 29s-old lock is under the 30s stale threshold, so it is NOT removed;
-        // acquisition times out and appendToBuffer fails closed (skips the write).
+        // acquisition times out; the buffer is not appended unlocked, and the entry spills (X4-4).
         const metrics = createTestMetrics();
         const result = appendToBuffer(metrics, { config: TEST_CONFIG_FAST_LOCK });
 
-        // Entry should be skipped because the sub-threshold lock was not removed.
-        assert.strictEqual(result, null, 'Should return null when the append is skipped');
-        const entries = readBuffer(TEST_CONFIG_FAST_LOCK);
-        assert.strictEqual(entries.length, 0, 'Entry should be skipped (lock not stale → not removed)');
+        assert.ok(result, 'the entry is spilled, not dropped (X4-4)');
+        assert.ok(fs.readFileSync(lockPath, 'utf-8').length > 0, 'the fresh lock was not removed');
         assert.ok(warningLogged, 'Should warn about lock acquisition failure');
       } finally {
         process.stderr.write = originalWrite;

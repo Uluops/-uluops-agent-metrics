@@ -380,6 +380,8 @@ export interface TrackerFormat {
   harness?: string;
   tokens: TrackerTokens;
   duration_ms: number;
+  /** The version of the definition that ran (v0.12.0, X4-2); omitted when it could not be named. */
+  definition_version?: string;
 }
 
 /**
@@ -397,9 +399,11 @@ export interface TrackerFormat {
  */
 export function toTrackerFormat(
   metrics: AgentMetrics,
-  agentName: string
+  agentName: string,
+  definitionVersion?: string,
 ): TrackerFormat {
   return {
+    ...(definitionVersion !== undefined ? { definition_version: definitionVersion } : {}),
     name: agentName,
     agent_id: metrics.agent_id,
     model: metrics.model,

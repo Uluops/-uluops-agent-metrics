@@ -23,7 +23,7 @@ import {
   getProjectName,
 } from '../utils.js';
 import { extractCodexMetricsFromFile } from '../codex-extractor.js';
-import { annotateBufferEntries, queryBuffer } from '../buffer.js';
+import { annotateBufferEntries, queryBuffer, trackerDefinitionVersion } from '../buffer.js';
 import {
   formatAgentList,
   formatAgentListError,
@@ -134,11 +134,20 @@ export function registerCoreCommands(program: Command): void {
           if (agentName) {
             suppliedNames[agentId] = agentName;
           }
+          // The buffer supplies the name only when none was given, and the captured
+          // definition (X4-2) always. An unreadable buffer must not fail an extract that
+          // was given a name (AF-002): the version is then omitted, not guessed.
+          let bufferEntry: ReturnType<typeof queryBuffer>[number] | undefined;
+          try {
+            bufferEntry = queryBuffer({ agentId }).find(e => e.agent_id === agentId);
+          } catch (err) {
+            if (!agentName) throw err;
+          }
           if (!agentName) {
-            const bufferEntries = queryBuffer({ agentId });
-            const bufferEntry = bufferEntries.find(e => e.agent_id === agentId);
             agentName = bufferEntry?.agent_name || metrics.slug || 'unknown';
           }
+          // X4-2: the captured definition's version, only under its own name.
+          const definitionVersion = trackerDefinitionVersion(bufferEntry?.definition, agentName);
 
           switch (format) {
             case 'summary':
@@ -148,7 +157,7 @@ export function registerCoreCommands(program: Command): void {
               console.log(formatMetricsSummary(metrics));
               break;
             case 'tracker':
-              jsonResults.push(toTrackerFormat(metrics, agentName));
+              jsonResults.push(toTrackerFormat(metrics, agentName, definitionVersion));
               break;
             case 'json':
               jsonResults.push(metrics);

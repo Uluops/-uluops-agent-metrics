@@ -12,6 +12,7 @@ import {
   clearAgents,
   cleanupExpired,
   entriesToTrackerFormat,
+  refreshEntriesFromTranscripts,
 } from '../buffer.js';
 import {
   displayBufferStatus,
@@ -74,7 +75,7 @@ export function registerBufferCommands(program: Command): void {
     .option('--end-before <iso-date>', 'Filter agents that finished before this time (ISO 8601)')
     .option('-a, --all', 'Include expired entries')
     .option('-f, --format <format>', 'Output format: table, json, tracker', 'table')
-    .action((options: {
+    .action(async (options: {
       session?: string;
       agentName?: string;
       run?: string;
@@ -135,8 +136,9 @@ export function registerBufferCommands(program: Command): void {
       }
 
       if (options.format === 'tracker') {
-        // Output format ready for validation tracker with full cache breakdown
-        console.log(JSON.stringify(entriesToTrackerFormat(entries), null, 2));
+        // Output format ready for validation tracker with full cache breakdown.
+        // 74629040: metrics come from the transcript when it still exists.
+        console.log(JSON.stringify(entriesToTrackerFormat(await refreshEntriesFromTranscripts(entries)), null, 2));
         return;
       }
 
@@ -148,7 +150,7 @@ export function registerBufferCommands(program: Command): void {
     .command('session <session-id>')
     .description('Get all buffered entries for a session')
     .option('-f, --format <format>', 'Output format: table, json, tracker', 'table')
-    .action((sessionId: string, options: { format: BufferFormat }) => {
+    .action(async (sessionId: string, options: { format: BufferFormat }) => {
       const entries = getAllForSession(sessionId);
 
       if (options.format === 'json') {
@@ -157,8 +159,9 @@ export function registerBufferCommands(program: Command): void {
       }
 
       if (options.format === 'tracker') {
-        // Output format ready for validation tracker with full cache breakdown
-        console.log(JSON.stringify(entriesToTrackerFormat(entries), null, 2));
+        // Output format ready for validation tracker with full cache breakdown.
+        // 74629040: metrics come from the transcript when it still exists.
+        console.log(JSON.stringify(entriesToTrackerFormat(await refreshEntriesFromTranscripts(entries)), null, 2));
         return;
       }
 
