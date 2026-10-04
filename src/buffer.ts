@@ -44,6 +44,36 @@ export interface BufferEntry {
    * schema is strict (additionalProperties:false). See ADR-0004.
    */
   run_id?: string;
+  /**
+   * The agent definition that ran (checklist X4-1): captured at SubagentStart and
+   * confirmed at SubagentStop. Absent on entries captured before v0.12.0, and when the
+   * definition could not be named — then `definition_unresolved` says why. Only
+   * `definition.version` reaches `-f tracker` output (save_run's agents[] schema is
+   * strict and has no hash field); sha256 and path stay here as evidence (b0b4ca87).
+   */
+  definition?: BufferDefinition;
+  definition_unresolved?: string;
+}
+
+/** See {@link BufferEntry.definition}. */
+export interface BufferDefinition {
+  /** Frontmatter `name` of the definition that ran. */
+  name: string;
+  version: string;
+  /** '' when several same-level files carried the same version (content unknown). */
+  sha256: string;
+  path: string;
+  /** 'spawn' = captured at SubagentStart and unchanged at stop; 'stop' = no spawn record. */
+  captured_at: 'spawn' | 'stop';
+}
+
+/**
+ * The tracker `definition_version` for an entry, or undefined. Emitted only when the
+ * captured definition's name is the name the entry is reported under: a caller-supplied
+ * or tag-derived name that differs would attach one definition's version to another.
+ */
+export function trackerDefinitionVersion(definition: BufferDefinition | undefined, reportedName: string): string | undefined {
+  return definition && definition.name === reportedName ? definition.version : undefined;
 }
 
 /**
@@ -253,6 +283,9 @@ export interface AppendOptions {
   config?: BufferConfig;
   /** Source of the capture: 'hook', 'cli', or 'api' */
   source?: 'hook' | 'cli' | 'api';
+  /** The definition that ran (X4-1), or why it could not be named. */
+  definition?: BufferDefinition;
+  definitionUnresolved?: string;
 }
 
 /**
@@ -286,6 +319,8 @@ export function appendToBuffer(
     project_path: options.projectPath,
     prompt_id: metrics.prompt_id ?? undefined,
     run_id: options.runId,   // undefined when absent → omitted from JSON
+    definition: options.definition,
+    definition_unresolved: options.definitionUnresolved,
   };
 
   // Acquire lock for safe concurrent access
@@ -294,20 +329,26 @@ export function appendToBuffer(
   const lockAcquired = acquireLock(lockPath, lockTimeoutMs);
 
   if (!lockAcquired) {
-    // Fail closed. Under sustained parallel-SubagentStop contention an unlocked
-    // appendFileSync of a multi-KB line can interleave with a concurrent writer
-    // and corrupt both lines (readBuffer then silently drops them — losing two
-    // metrics plus leaving garbage). Skipping loses at most this one best-effort
-    // metric, deterministically, and never corrupts another writer's entry. The
-    // 5s exponential-backoff retry in acquireLock has already run, so this only
-    // fires when the lock is genuinely stuck.
-    process.stderr.write(
-      `Warning: Could not acquire lock for ${config.bufferPath} within ${lockTimeoutMs}ms; skipping metric capture to avoid buffer corruption\n`
-    );
-    return null;
+    // Never append unlocked: a multi-KB line can interleave with a concurrent writer
+    // and corrupt both. Until v0.12.0 the entry was dropped here, losing its tokens and
+    // (now) its captured definition (checklist X4-4). Instead it goes to its own spill
+    // file — a unique name, so no lock is needed — which reads include and the next
+    // locked append drains into the buffer. The 5s backoff in acquireLock has already
+    // run, so this only fires when the lock is genuinely stuck.
+    try {
+      const spilled = writeSpill(entry, config);
+      process.stderr.write(`Warning: Could not acquire lock for ${config.bufferPath} within ${lockTimeoutMs}ms; entry spilled to ${spilled}\n`);
+      return entry;
+    } catch {
+      process.stderr.write(
+        `Warning: Could not acquire lock for ${config.bufferPath} within ${lockTimeoutMs}ms and could not spill; skipping metric capture to avoid buffer corruption\n`
+      );
+      return null;
+    }
   }
 
   try {
+    drainSpill(config);
     // Append to JSONL file. mode: 0o600 (spec 05) applies at creation only —
     // masked by umask and ignored if the file already exists; an existing
     // buffer hardens at its next rewrite instead (see removeWhere /
@@ -434,12 +475,57 @@ function parseBufferContent(content: string): { entries: BufferEntry[]; quaranti
  * @returns Array of all buffer entries, including expired ones
  */
 export function readBuffer(config: BufferConfig = defaultConfig()): BufferEntry[] {
+  const spilled = readSpill(config);
   if (!fs.existsSync(config.bufferPath)) {
-    return [];
+    return spilled;
   }
 
   const content = fs.readFileSync(config.bufferPath, 'utf-8');
-  return parseBufferContent(content).entries;
+  return [...parseBufferContent(content).entries, ...spilled];
+}
+
+// ── Spill (X4-4) ────────────────────────────────────────────────────────
+
+/** Directory of entries written while the buffer lock was stuck: one file per entry. */
+export function spillDir(config: BufferConfig = defaultConfig()): string {
+  return config.bufferPath + '.spill';
+}
+
+function writeSpill(entry: BufferEntry, config: BufferConfig): string {
+  const dir = spillDir(config);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, `${entry.agent_id}-${Date.now()}-${process.pid}.json`);
+  fs.writeFileSync(file, JSON.stringify(entry), { mode: 0o600, flag: 'wx' });
+  return file;
+}
+
+/** Spilled entries not yet drained. Malformed files are skipped (left for inspection). */
+export function readSpill(config: BufferConfig = defaultConfig()): BufferEntry[] {
+  let files: string[];
+  try { files = fs.readdirSync(spillDir(config)).filter(f => f.endsWith('.json')).sort(); } catch { return []; }
+  const out: BufferEntry[] = [];
+  for (const f of files) {
+    try {
+      const e = JSON.parse(fs.readFileSync(path.join(spillDir(config), f), 'utf-8')) as unknown;
+      if (isValidBufferEntry(e)) out.push(e);
+    } catch { /* skip */ }
+  }
+  return out;
+}
+
+/** Move spilled entries into the buffer. Caller holds the buffer lock. */
+function drainSpill(config: BufferConfig): void {
+  let files: string[];
+  try { files = fs.readdirSync(spillDir(config)).filter(f => f.endsWith('.json')).sort(); } catch { return; }
+  for (const f of files) {
+    const file = path.join(spillDir(config), f);
+    try {
+      const e = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
+      if (!isValidBufferEntry(e)) continue;
+      fs.appendFileSync(config.bufferPath, toJsonlLine(e), { encoding: 'utf-8', mode: 0o600 });
+      fs.unlinkSync(file);
+    } catch { /* leave it for the next drain */ }
+  }
 }
 
 /**
@@ -861,6 +947,8 @@ export interface TrackerAgentFormat {
     tool_tokens?: number;
   };
   duration_ms: number;
+  /** The version of the definition that ran (v0.12.0, X4-2); omitted when it could not be named. */
+  definition_version?: string;
 }
 
 /**
@@ -885,11 +973,14 @@ export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerAgentForm
     // TypeError-crash the whole batch (readBuffer already validates, but this
     // function is public and may receive entries from other sources).
     .filter((e) => e?.metrics?.tokens != null)
-    .map((e) => ({
+    .map((e) => {
     // Fall back to agent_id, not 'unknown': tracker saves enforce unique
     // agent names per run, so multiple nameless entries under a literal
     // 'unknown' would collide (409). The id is unique and joinable.
-    name: e.agent_name || e.agent_id,
+    const name = e.agent_name || e.agent_id;
+    const definitionVersion = trackerDefinitionVersion(e.definition, name);
+    return {
+    name,
     agent_id: e.agent_id,
     model: e.metrics.model,
     harness: e.metrics.harness,
@@ -905,5 +996,48 @@ export function entriesToTrackerFormat(entries: BufferEntry[]): TrackerAgentForm
       tool_tokens: e.metrics.tokens.tool,
     },
     duration_ms: e.metrics.duration_ms,
-  }));
+    ...(definitionVersion !== undefined ? { definition_version: definitionVersion } : {}),
+  };
+  });
+}
+
+// ── Capture counters (X4-5) ─────────────────────────────────────────────
+
+export interface DefinitionCaptureStats {
+  entries: number;
+  withVersion: number;
+  capturedAtSpawn: number;
+  capturedAtStop: number;
+  /** Entries whose definition could not be named, by cause. */
+  unresolvedByCause: Record<string, number>;
+  /** Entries with no agent name at all: the harness sent no agent_type and no tag named one. */
+  noAgentName: number;
+  /** Entries written before definition capture existed (neither field present). */
+  preCapture: number;
+  /** Entries still in the spill directory (written while the lock was stuck). */
+  spilled: number;
+}
+
+/**
+ * Counters that make a silent capture failure visible (checklist X4-5): a harness that
+ * stops sending `agent_type` (as `slug` disappeared in Claude Code 2.1.145) shows up as
+ * a rising `noAgentName` and `unresolvedByCause['no-agent-type']`, not as a log line.
+ */
+export function definitionCaptureStats(entries: readonly BufferEntry[], spilled: number): DefinitionCaptureStats {
+  const stats: DefinitionCaptureStats = {
+    entries: entries.length, withVersion: 0, capturedAtSpawn: 0, capturedAtStop: 0,
+    unresolvedByCause: {}, noAgentName: 0, preCapture: 0, spilled,
+  };
+  for (const e of entries) {
+    if (!e.agent_name) stats.noAgentName++;
+    if (e.definition) {
+      stats.withVersion++;
+      if (e.definition.captured_at === 'spawn') stats.capturedAtSpawn++; else stats.capturedAtStop++;
+    } else if (e.definition_unresolved) {
+      stats.unresolvedByCause[e.definition_unresolved] = (stats.unresolvedByCause[e.definition_unresolved] ?? 0) + 1;
+    } else {
+      stats.preCapture++;
+    }
+  }
+  return stats;
 }

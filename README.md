@@ -315,12 +315,23 @@ Ready for `save_run`:
     "cache_read_tokens": 315202,
     "total_effective_tokens": 65413
   },
-  "duration_ms": 113126
+  "duration_ms": 113126,
+  "definition_version": "1.4.0"
 }
 ```
 
 `agent_id` (v0.7.0) is the transcript/agent provenance id — it makes the saved
 tracker row joinable back to its buffer entry and session transcript.
+
+`definition_version` (v0.12.0) is the version of the agent definition that **ran**,
+captured by the hooks (see [Definition capture](#definition-capture-v0120)). Splice
+it with the rest of the entry: the tracker credits a run to an agent version only
+when the caller sends that agent's own version, and stores a server-filled
+`inferred-latest` (counted toward no version) when it is absent. It is **omitted**
+whenever the definition could not be named — never guessed — and whenever the entry
+is reported under a different name than the definition's own. The content hash and
+path stay in the buffer: `save_run`'s `agents[]` schema is strict and has no field
+for them.
 
 ## Token Calculations
 
@@ -410,10 +421,11 @@ missing throw:
   the file was readable but contained no valid messages.
 - **`findAgentFile`** — returns `null` if no matching file exists; does not throw for
   not-found.
-- **`appendToBuffer`** — returns `null` (not a throw) when the buffer lock could not be
-  acquired. It is fail-closed by design: it is called from the SubagentStop hook, which must
-  never fail the hook itself, so lock contention is a silently-skipped best-effort capture
-  rather than a raised error.
+- **`appendToBuffer`** — never appends to the buffer without its lock. When the lock cannot
+  be acquired (after the 5s backoff), the entry is written to its own file in
+  `<buffer>.spill/` and returned (v0.12.0); `readBuffer` includes spilled entries and the
+  next locked append drains them into the buffer. It returns `null` (not a throw) only when
+  the spill itself fails. Before v0.12.0 a contended entry was skipped and lost.
 - **`cleanupExpired`, `clearSession`, `clearAgents`, `annotateBufferEntries`** — throw
   `LockAcquisitionError` on lock contention (unlike `appendToBuffer`, these are explicit
   maintenance/query operations, not a fire-and-forget hook capture).
@@ -821,6 +833,50 @@ Then add the hook to `~/.claude/settings.json` with the matching absolute path:
         ]
       }
     ]
+  }
+}
+```
+
+### Definition capture (v0.12.0)
+
+The hook records which agent definition each subagent ran, so `-f tracker` output
+carries `definition_version` without the orchestrator typing it.
+
+- **At `SubagentStart`** the hook resolves the subagent's `agent_type` to the installed
+  definition whose frontmatter `name` matches, in Claude Code's documented order: each
+  project `.claude/agents` from the working directory upward (closest first), then
+  `~/.claude/agents`. It records the version, content sha256 and path in
+  `~/.claude/agent-metrics-spawns.jsonl`, keyed by `agent_id`. Claude Code loads the full
+  definition at spawn, so this names what will run.
+- **At `SubagentStop`** it re-hashes the file and attaches the capture to the buffer entry.
+
+| Situation | Result |
+|---|---|
+| unchanged since spawn | `definition` recorded, `captured_at: "spawn"` |
+| file changed between spawn and stop (a reinstall mid-run) | omitted, `definition_unresolved: "changed-during-run"` |
+| file modified within 30s before spawn (Claude Code's reload lag) | omitted, `"reload-window"` |
+| no spawn record (SubagentStart hook not configured) | captured at stop, `captured_at: "stop"` |
+| no file / no `version:` / several same-level files at different versions | omitted, `"no-file"` / `"no-version"` / `"ambiguous"` |
+| an `[agent:name]` tag naming a different definition than the one that ran | omitted, `"tag-mismatch"` |
+| a plugin-scoped agent type (`plugin:name`) | omitted, `"plugin-scoped"` |
+
+**Never guess.** A missing version costs one run's attribution, which is counted; a
+wrong one credits another version silently. `agent-metrics status` reports how many
+entries carry a version, which causes left the rest without one, how many entries have
+no agent name, and how many are still spilled.
+
+**Limit.** The version label is what the file says. A definition edited and reinstalled
+without a version bump still reports the old label; the sha256 in the buffer is the
+evidence for a later content comparison.
+
+To enable it, add `SubagentStart` beside `SubagentStop`, with the same command (the hook
+dispatches on `hook_event_name`):
+
+```json
+{
+  "hooks": {
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node <npm root -g>/@uluops/agent-metrics/dist/hook.js", "timeout": 10 }] }],
+    "SubagentStop":  [{ "hooks": [{ "type": "command", "command": "node <npm root -g>/@uluops/agent-metrics/dist/hook.js", "timeout": 10 }] }]
   }
 }
 ```

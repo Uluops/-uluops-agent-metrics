@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Definition capture** (definition-version-dispositions checklist X4-1, X4-2). `-f tracker` output (both `extract` and `buffer list`) now carries **`definition_version`**: the version of the agent definition that ran. Without it the tracker stores a server-filled `inferred-latest` that no version record counts, and orchestrators forget it or copy the pipeline's version onto every agent (tracker c18f1ab1).
+  - **Captured at `SubagentStart`, confirmed at `SubagentStop`.** Claude Code loads a subagent's definition at spawn and reloads changed files within seconds, so a stop-time read alone would record a reinstall that happened mid-run. The new `SubagentStart` handling (same `hook.js`; it dispatches on `hook_event_name`) resolves `agent_type` to the installed definition by frontmatter `name`, in Claude Code's documented precedence, and records version, sha256 and path in `~/.claude/agent-metrics-spawns.jsonl`. `SubagentStop` re-hashes the file.
+  - **Never guessed.** The version is omitted, with a recorded `definition_unresolved` cause, when the file changed during the run, was modified inside the 30 s reload window, is missing, has no `version:`, is ambiguous at one precedence level, is named differently by an `[agent:]` tag, or is plugin-scoped. It is also omitted when an entry is reported under a different name than the definition's own.
+  - **Buffer entries** gain optional `definition` (`name`, `version`, `sha256`, `path`, `captured_at`) and `definition_unresolved`. Only the version reaches tracker output, because `save_run`'s `agents[]` schema is strict.
+  - **`agent-metrics status`** reports definition-capture counters (with version, causes, no agent name, pre-capture, spilled), so a harness that stops sending `agent_type` shows up as a number.
+  - **Setup:** add a `SubagentStart` hook entry with the same command as `SubagentStop`. Without it, capture falls back to stop time (`captured_at: "stop"`).
+
+### Changed
+
+- **A contended buffer write is spilled, not dropped** (checklist X4-4). When the lock cannot be acquired after the 5 s backoff, `appendToBuffer` writes the entry to its own file under `<buffer>.spill/` and returns it. `readBuffer` includes spilled entries, and the next locked append drains them into the buffer. Previously the entry was skipped and its tokens lost. The buffer file is still never appended without the lock. `appendToBuffer` returns `null` only if the spill itself fails.
+
 ## [0.11.0] - 2026-09-17
 
 ### Fixed

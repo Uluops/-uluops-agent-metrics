@@ -5,7 +5,7 @@
  */
 
 import { Command, Option } from 'commander';
-import { queryBuffer } from '../buffer.js';
+import { definitionCaptureStats, queryBuffer, readSpill } from '../buffer.js';
 import { displayBufferStatus, formatReport } from '../display/formatters.js';
 import type { MetricsProvider } from '../types.js';
 
@@ -19,6 +19,15 @@ export function registerStatusCommands(program: Command): void {
     .description('Show buffer statistics')
     .action(() => {
       displayBufferStatus('Agent Metrics Buffer');
+      // X4-5: definition capture, so a silent failure has a number.
+      const s = definitionCaptureStats(queryBuffer({ includeExpired: false }), readSpill().length);
+      const causes = Object.entries(s.unresolvedByCause).map(([k, v]) => `${k} ${String(v)}`).join(', ') || 'none';
+      console.log('\nDefinition capture (X4)');
+      console.log(`  with version:     ${String(s.withVersion)} of ${String(s.entries)} (spawn ${String(s.capturedAtSpawn)}, stop ${String(s.capturedAtStop)})`);
+      console.log(`  unresolved:       ${causes}`);
+      console.log(`  no agent name:    ${String(s.noAgentName)}`);
+      console.log(`  before capture:   ${String(s.preCapture)}`);
+      console.log(`  spilled (locked): ${String(s.spilled)}`);
     });
 
   // Top-level report command - show recent entries in a nice format

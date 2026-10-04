@@ -1,0 +1,17 @@
+# Mutation pass — definition capture (v0.12.0, dvc checklist X4-1, X4-2, X4-4, X4-5)
+
+Each control below was run against the defect it names: the source was mutated, `npm test` was run, and the source was restored. Every mutation must fail at least one named test. The harness is `scripts/`-free and lives in the session scratchpad; these mutations are one-line edits applied and reverted in place, not branches.
+
+Baseline: `npm test` 454/454; `check:readme-exports` and `check:pack` OK.
+
+| Control | Defect | Fails |
+|---|---|---|
+| X4-1 changed during run | a reinstall between spawn and stop is not detected (stop-time-read semantics) | `reinstalled between spawn and stop → omitted`, plus the hook-level `changed-during-run` case |
+| X4-1 reload window | no guard for a file modified inside Claude Code's reload lag | `modified 5 s before spawn → omitted` |
+| X4-1 never guess (ambiguity) | same-level files at different versions resolved by first match | `two same-level files at different versions are ambiguous` |
+| X4-1 never guess (no version) | a missing frontmatter version defaulted to `0.0.0` | `no version in frontmatter → omitted` |
+| X4-1 what ran, not what was tagged | an `[agent:]` tag naming another definition is ignored | `an [agent:] tag naming another definition → omitted, tag-mismatch` |
+| X4-2 own name only | the version is emitted under any reported name | `a version is emitted only under its own name` |
+| X4-4 spill, not skip | a contended write is dropped (the pre-0.12 behaviour) | `should fail closed … when lock cannot be acquired`; `should NOT remove lock that is less than 30 seconds old` |
+
+**Not covered by a mutation:** the X4-5 counters (asserted exactly by `capture counters (X4-5)`), and the live Claude Code hook payload. SubagentStart's `agent_id`/`agent_type` are documented (code.claude.com `hooks`), but verifying them takes a real run after the hook is configured. The rollout plan's live check covers that.
