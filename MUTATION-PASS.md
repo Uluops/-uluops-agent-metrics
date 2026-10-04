@@ -25,3 +25,24 @@ Baseline: `npm test` 454/454; `check:readme-exports` and `check:pack` OK.
 Live, 2026-10-04: before the fix, 3 of 4 hook captures undercounted output tokens 6–10×, and a re-woken agent appeared twice in tracker output. After it, 3 of 3 raw captures matched `extract`, and the previously duplicated agent reads back once with its complete run (523 tokens).
 
 **Not covered by a mutation:** the X4-5 counters (asserted exactly by `capture counters (X4-5)`), and the live Claude Code hook payload. SubagentStart's `agent_id`/`agent_type` are documented (code.claude.com `hooks`), but verifying them takes a real run after the hook is configured. The rollout plan's live check covers that.
+
+## X4 review fixes (2026-10-04)
+
+Fixes from the post-implementation crew (code-auditor, anxiety-reader, test-architect,
+public-interface, release-readiness). Each fix was reverted in place and the targeted suites re-run
+(`hook-definition`, `definition`, `hook.e2e`, `commands/core`, `undercount`, `buffer`); source
+restored after each.
+
+| # | Mutation | Caught |
+|---|---|---|
+| M1 | `newlineGuard` never adds a newline | yes — partial-last-line drain test |
+| M2 | no `drainSpill` before `removeWhere` | yes — clearAgents-on-spilled test |
+| M3 | F1: stop-time read accepted unconditionally | yes — unverified-at-stop test |
+| M4 | F1 boundary `>=` → `>` | yes — exact-boundary test |
+| M5 | spawn shape check accepts any definition object | yes — malformed-spawn test (first attempt did not compile; redone as a conjunction removal) |
+| M6 | capture catch rethrows | yes — capture-error test |
+| M7 | no 50-char cap | yes — over-long version test |
+| M8 | `main()` SubagentStart falls through to the stop path | yes — `hook.e2e` (was untested; test-architect) |
+| M9 | `extract` passes `undefined` for the version | yes — core extract wiring test (was untested; test-architect) |
+| M10 | same-version duplicates carry the first match's mtime | yes — newest-mtime test |
+| M11 | readers include `.claimed` files | yes — stranded-claim test |

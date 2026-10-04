@@ -131,11 +131,41 @@ describe('definition capture (X4-1)', () => {
       assert.strictEqual(out.cause, 'reload-window');
     });
 
-    it('no spawn record → a stop-time capture, marked as such', () => {
-      write(user, 'x.md', def('x', '1.0.0'));
-      const out = confirmAtStop(null, resolveDefinition('x', dirs));
+    it('no spawn record, file settled before the agent started → a stop-time capture, marked as such', () => {
+      const p = write(user, 'x.md', def('x', '1.0.0'));
+      const { mtimeMs } = fs.statSync(p);
+      const out = confirmAtStop(null, resolveDefinition('x', dirs), mtimeMs + RELOAD_WINDOW_MS);
       assert.strictEqual(out.definition?.version, '1.0.0');
       assert.strictEqual(out.capturedAt, 'stop');
+    });
+
+    it('no spawn record, file modified inside the window before start → omitted, unverified-at-stop (F1; control: the old unconditional read)', () => {
+      const p = write(user, 'x.md', def('x', '1.0.0'));
+      const { mtimeMs } = fs.statSync(p);
+      const atStop = resolveDefinition('x', dirs);
+      assert.strictEqual(confirmAtStop(null, atStop, mtimeMs + RELOAD_WINDOW_MS - 1).cause, 'unverified-at-stop');
+      assert.strictEqual(confirmAtStop(null, atStop, mtimeMs - 60_000).cause, 'unverified-at-stop'); // reinstalled mid-run
+      assert.strictEqual(confirmAtStop(null, atStop).cause, 'unverified-at-stop'); // start unknown
+      assert.strictEqual(confirmAtStop(null, atStop, Number.NaN).cause, 'unverified-at-stop');
+      assert.ok(atStop.ok && atStop.definition.version === '1.0.0'); // what the old read would have recorded
+    });
+
+    it('spawn path boundary: exactly RELOAD_WINDOW_MS after the edit stands, one ms less is reload-window', () => {
+      const p = write(user, 'x.md', def('x', '1.0.0'));
+      const spawn = captureFile(p)!;
+      const atStop = resolveDefinition('x', dirs);
+      assert.strictEqual(confirmAtStop({ definition: spawn, spawnedAtMs: spawn.mtimeMs + RELOAD_WINDOW_MS }, atStop).definition?.version, '1.0.0');
+      assert.strictEqual(confirmAtStop({ definition: spawn, spawnedAtMs: spawn.mtimeMs + RELOAD_WINDOW_MS - 1 }, atStop).cause, 'reload-window');
+    });
+
+    it('same-version duplicates carry the NEWEST mtime, so a fresh edit to either trips the window', () => {
+      const a = write(user, 'x-agent.md', def('x', '1.0.0', 'one'));
+      write(user, 'x-copy.md', def('x', '1.0.0', 'two'));
+      const old = new Date(Date.now() - 3_600_000);
+      fs.utimesSync(a, old, old);
+      const r = resolveDefinition('x', dirs);
+      assert.ok(r.ok);
+      assert.ok(Date.now() - r.definition.mtimeMs < 60_000, 'mtime is the fresh copy, not the first match');
     });
   });
 });

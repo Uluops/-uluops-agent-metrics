@@ -71,10 +71,18 @@ export interface BufferDefinition {
  * The tracker `definition_version` for an entry, or undefined. Emitted only when the
  * captured definition's name is the name the entry is reported under: a caller-supplied
  * or tag-derived name that differs would attach one definition's version to another.
+ *
+ * A version longer than {@link TRACKER_DEFINITION_VERSION_MAX} is omitted, not truncated:
+ * save_run's schema rejects the whole call on an over-long value (ops-mcp
+ * `z.string().max(50)`), and a truncated label would name a version that does not exist.
  */
 export function trackerDefinitionVersion(definition: BufferDefinition | undefined, reportedName: string): string | undefined {
-  return definition && definition.name === reportedName ? definition.version : undefined;
+  if (!definition || definition.name !== reportedName) return undefined;
+  return definition.version.length <= TRACKER_DEFINITION_VERSION_MAX ? definition.version : undefined;
 }
+
+/** save_run's `agents[].definition_version` limit (ops-mcp `tools/save-run.ts`). */
+export const TRACKER_DEFINITION_VERSION_MAX = 50;
 
 /**
  * Buffer configuration
@@ -353,7 +361,7 @@ export function appendToBuffer(
     // masked by umask and ignored if the file already exists; an existing
     // buffer hardens at its next rewrite instead (see removeWhere /
     // annotateBufferEntries below).
-    fs.appendFileSync(config.bufferPath, toJsonlLine(entry), { encoding: 'utf-8', mode: 0o600 });
+    fs.appendFileSync(config.bufferPath, newlineGuard(config.bufferPath) + toJsonlLine(entry), { encoding: 'utf-8', mode: 0o600 });
 
     // Log the metrics capture
     logMetricsCapture(
@@ -469,10 +477,12 @@ function parseBufferContent(content: string): { entries: BufferEntry[]; quaranti
 }
 
 /**
- * Read all entries from the buffer (including expired).
+ * Read the buffer (including expired entries), spill files included, collapsed to
+ * one entry per `agent_id` — the latest capture wins (see {@link latestPerAgent}).
+ * Not a raw view: the rewrite paths read raw lines through readBufferWithQuarantine.
  *
  * @param config - Buffer configuration (optional, uses defaults)
- * @returns Array of all buffer entries, including expired ones
+ * @returns One entry per agent instance, including expired ones
  */
 export function readBuffer(config: BufferConfig = defaultConfig()): BufferEntry[] {
   const spilled = readSpill(config);
@@ -539,18 +549,72 @@ export function readSpill(config: BufferConfig = defaultConfig()): BufferEntry[]
   return out;
 }
 
-/** Move spilled entries into the buffer. Caller holds the buffer lock. */
+/**
+ * Move spilled entries into the buffer. Caller holds the buffer lock.
+ *
+ * Each file is CLAIMED (renamed out of the `.json` namespace) before its line is
+ * appended, then the claim is deleted. Until the review of 2026-10-04 (code-auditor
+ * AF-002) the order was append-then-unlink inside one empty catch: an unlink that failed
+ * after a successful append left the file to be appended again on every later drain, and
+ * nothing said so. Now a failed unlink strands a `.claimed` file that no reader or drain
+ * looks at, and every failure is reported on stderr. A failed append renames the claim
+ * back so the entry is retried.
+ *
+ * The buffer may end in a partial line (a writer killed mid-append); appending onto it
+ * would fuse the drained entry into the corrupt line and lose both, so a newline is
+ * written first when the file does not end in one.
+ */
 function drainSpill(config: BufferConfig): void {
   let files: string[];
   try { files = fs.readdirSync(spillDir(config)).filter(f => f.endsWith('.json')).sort(); } catch { return; }
   for (const f of files) {
     const file = path.join(spillDir(config), f);
+    const claimed = `${file}.${process.pid}.claimed`;
     try {
-      const e = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
-      if (!isValidBufferEntry(e)) continue;
-      fs.appendFileSync(config.bufferPath, toJsonlLine(e), { encoding: 'utf-8', mode: 0o600 });
-      fs.unlinkSync(file);
-    } catch { /* leave it for the next drain */ }
+      fs.renameSync(file, claimed);
+    } catch {
+      continue; // claimed or removed by another drain
+    }
+    let e: unknown;
+    try {
+      e = JSON.parse(fs.readFileSync(claimed, 'utf-8')) as unknown;
+    } catch (err) {
+      process.stderr.write(`Warning: spill file ${f} is unreadable (${(err as Error).message}); left as ${claimed}\n`);
+      continue;
+    }
+    if (!isValidBufferEntry(e)) {
+      process.stderr.write(`Warning: spill file ${f} is not a valid buffer entry; left as ${claimed}\n`);
+      continue;
+    }
+    try {
+      fs.appendFileSync(config.bufferPath, newlineGuard(config.bufferPath) + toJsonlLine(e), { encoding: 'utf-8', mode: 0o600 });
+    } catch (err) {
+      process.stderr.write(`Warning: could not drain spill file ${f} into the buffer (${(err as Error).message}); will retry\n`);
+      try { fs.renameSync(claimed, file); } catch { /* AUDIT-OK(no_empty_catch): the claim stays; reported above */ }
+      continue;
+    }
+    try {
+      fs.unlinkSync(claimed);
+    } catch (err) {
+      process.stderr.write(`Warning: drained ${f} but could not remove ${claimed} (${(err as Error).message}); it will not be drained again\n`);
+    }
+  }
+}
+
+/** `'\n'` when the file exists, is non-empty and does not end in a newline; else `''`. */
+function newlineGuard(file: string): string {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return '';
+    const last = Buffer.alloc(1);
+    fs.readSync(fd, last, 0, 1, size - 1);
+    return last[0] === 0x0a ? '' : '\n';
+  } catch {
+    return ''; // AUDIT-OK(no_empty_catch): no file yet — nothing to guard
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
 }
 
@@ -760,6 +824,9 @@ function removeWhere(
   config: BufferConfig = defaultConfig(),
 ): number {
   return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
+    // Spilled entries are part of the buffer to every reader; a rewrite that ignored
+    // them could not clear or annotate them (2026-10-04 review). Drain first.
+    drainSpill(config);
     const { entries: allEntries, quarantinedLines } = readBufferWithQuarantine(config);
     const remaining = allEntries.filter(keep);
     const removedCount = allEntries.length - remaining.length;
@@ -798,6 +865,9 @@ export function annotateBufferEntries(
   config: BufferConfig = defaultConfig(),
 ): number {
   return withFileLock(config.bufferPath + '.lock', config.lockTimeoutMs ?? 5000, () => {
+    // Spilled entries are part of the buffer to every reader; a rewrite that ignored
+    // them could not clear or annotate them (2026-10-04 review). Drain first.
+    drainSpill(config);
     const { entries: allEntries, quarantinedLines } = readBufferWithQuarantine(config);
     let updated = 0;
 

@@ -382,23 +382,34 @@ export function definitionAtStop(
   agentId: string,
   agentType: string | undefined,
   explicitTag: string | null,
-  deps: { definitionDirs?: DefinitionDir[]; spawnFile?: string; cwd?: string } = {},
+  deps: { definitionDirs?: DefinitionDir[]; spawnFile?: string; cwd?: string; startedAtMs?: number } = {},
 ): { definition?: BufferDefinition; definitionUnresolved?: string } {
-  if (explicitTag && agentType && explicitTag !== agentType) return { definitionUnresolved: 'tag-mismatch' };
-  const spawn = findSpawn(agentId, deps.spawnFile ?? defaultSpawnPath());
-  if (spawn && !spawn.definition) return { definitionUnresolved: spawn.unresolved ?? 'no-file' };
-  const atStop = resolveDefinition(agentType, deps.definitionDirs ?? defaultDefinitionDirs(deps.cwd));
-  const out = confirmAtStop(spawn?.definition ? { definition: spawn.definition, spawnedAtMs: spawn.spawned_at_ms } : null, atStop);
-  if (!out.definition || out.definition.version === null) return { definitionUnresolved: out.cause ?? 'no-version' };
-  return {
-    definition: {
-      name: out.definition.name,
-      version: out.definition.version,
-      sha256: out.definition.sha256,
-      path: out.definition.path,
-      captured_at: out.capturedAt,
-    },
-  };
+  // Never let definition capture cost the metrics capture: any failure here degrades to
+  // an omitted version with a cause (2026-10-04 review).
+  try {
+    if (explicitTag && agentType && explicitTag !== agentType) return { definitionUnresolved: 'tag-mismatch' };
+    const spawn = findSpawn(agentId, deps.spawnFile ?? defaultSpawnPath());
+    if (spawn && !spawn.definition) return { definitionUnresolved: spawn.unresolved ?? 'no-file' };
+    const atStop = resolveDefinition(agentType, deps.definitionDirs ?? defaultDefinitionDirs(deps.cwd));
+    const out = confirmAtStop(
+      spawn?.definition ? { definition: spawn.definition, spawnedAtMs: spawn.spawned_at_ms } : null,
+      atStop,
+      deps.startedAtMs,
+    );
+    if (!out.definition || out.definition.version === null) return { definitionUnresolved: out.cause ?? 'no-version' };
+    return {
+      definition: {
+        name: out.definition.name,
+        version: out.definition.version,
+        sha256: out.definition.sha256,
+        path: out.definition.path,
+        captured_at: out.capturedAt,
+      },
+    };
+  } catch (err) {
+    console.error(`[agent-metrics] definition capture failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { definitionUnresolved: 'capture-error' };
+  }
 }
 
 export async function handleHook(
@@ -494,6 +505,7 @@ export async function handleHook(
     // X4-1: the definition that ran, confirmed against the spawn capture.
     const captured = definitionAtStop(agentId, input.agent_type, explicitTag, {
       definitionDirs: deps.definitionDirs, spawnFile: deps.spawnFile, cwd: input.cwd,
+      startedAtMs: Date.parse(metrics.start_time),
     });
 
     // Resolve run token: explicit [run:token] tag minted by the orchestrator.

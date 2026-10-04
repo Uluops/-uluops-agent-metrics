@@ -40,7 +40,11 @@ function prune(file: string, nowMs: number): void {
   const keep = fs.readFileSync(file, 'utf8').split('\n').filter(line => {
     try { return nowMs - (JSON.parse(line) as SpawnRecord).spawned_at_ms < SPAWN_TTL_MS; } catch { return false; }
   });
-  fs.writeFileSync(file, keep.length ? keep.join('\n') + '\n' : '', { mode: 0o600 });
+  // Temp file + rename: findSpawn reads without the lock, and a truncate-then-write would
+  // let a concurrent stop read an empty manifest and fall back to a stop-time capture.
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, keep.length ? keep.join('\n') + '\n' : '', { mode: 0o600 });
+  fs.renameSync(tmp, file);
 }
 
 /** Append a spawn record. Returns false when the lock could not be taken (the caller counts it). */
@@ -66,9 +70,25 @@ export function findSpawn(agentId: string, file: string = defaultSpawnPath()): S
     const line = lines[i];
     if (!line) continue;
     try {
-      const r = JSON.parse(line) as SpawnRecord;
-      if (r.agent_id === agentId) return r;
+      const r = JSON.parse(line) as unknown;
+      if (isSpawnRecord(r) && r.agent_id === agentId) return r;
     } catch { /* skip malformed */ }
   }
   return null;
+}
+
+/**
+ * Shape check for a manifest line. A record that names a definition must carry the
+ * fields confirmAtStop reads; anything else is skipped like a malformed line, so a
+ * hand-edited or foreign line degrades to "no spawn record" rather than a throw.
+ */
+function isSpawnRecord(r: unknown): r is SpawnRecord {
+  if (typeof r !== 'object' || r === null) return false;
+  const o = r as Record<string, unknown>;
+  if (typeof o.agent_id !== 'string' || typeof o.spawned_at_ms !== 'number') return false;
+  if (o.definition === null) return true;
+  const d = o.definition as Record<string, unknown> | undefined;
+  return typeof d === 'object' && d !== null
+    && typeof d.name === 'string' && typeof d.sha256 === 'string' && typeof d.path === 'string'
+    && typeof d.mtimeMs === 'number' && (d.version === null || typeof d.version === 'string');
 }

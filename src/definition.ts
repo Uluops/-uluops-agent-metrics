@@ -49,7 +49,8 @@ export type UnresolvedCause =
   | 'changed-during-run'
   | 'reload-window'
   | 'tag-mismatch'
-  | 'no-agent-type';
+  | 'no-agent-type'
+  | 'unverified-at-stop';
 
 export interface DefinitionCapture {
   /** Frontmatter `name` of the definition that ran (the registry name). */
@@ -159,7 +160,9 @@ export function resolveDefinition(agentType: string | null | undefined, dirs: re
     if (found.length > 1) {
       // Same version label in several same-level files: the version is known, the
       // exact content is not — keep the label, drop the hash rather than pick one.
-      return { ok: true, definition: { ...first!, sha256: '', path: found.map(c => c.path).join(' | ') }, shadowed };
+      // The newest mtime stands for the set, so the reload-window checks see any edit.
+      const mtimeMs = Math.max(...found.map(c => c.mtimeMs));
+      return { ok: true, definition: { ...first!, sha256: '', path: found.map(c => c.path).join(' | '), mtimeMs }, shadowed };
     }
     return { ok: true, definition: first!, shadowed };
   }
@@ -167,17 +170,30 @@ export function resolveDefinition(agentType: string | null | undefined, dirs: re
 }
 
 /**
- * The spawn-time capture checked at stop (X4-1). `spawn` is what PreToolUse recorded;
- * `atStop` is a fresh capture of the same path.
+ * The spawn-time capture checked at stop (X4-1). `spawn` is what SubagentStart recorded;
+ * `atStop` is a fresh resolution of the same agent type.
+ *
+ * With no spawn record, a stop-time read names the definition that ran only if the file
+ * was already settled when the agent started: modified no later than
+ * {@link RELOAD_WINDOW_MS} before `startedAtMs` (the transcript's first timestamp).
+ * Otherwise the file may have been reinstalled while the agent ran, and the stop-time
+ * read would credit the new version for a run of the old one — omitted as
+ * `unverified-at-stop`. Until the review of 2026-10-04 (anxiety-reader F1) the stop-time
+ * read was accepted unconditionally, which is exactly the stop-read the spawn capture
+ * exists to replace.
  */
 export function confirmAtStop(
   spawn: { definition: DefinitionCapture; spawnedAtMs: number } | null,
   atStop: Resolution,
+  startedAtMs?: number,
 ): { definition: DefinitionCapture | null; cause: UnresolvedCause | null; capturedAt: 'spawn' | 'stop' } {
   if (!spawn) {
-    return atStop.ok
+    if (!atStop.ok) return { definition: null, cause: atStop.cause, capturedAt: 'stop' };
+    const settled = startedAtMs !== undefined && Number.isFinite(startedAtMs)
+      && startedAtMs - atStop.definition.mtimeMs >= RELOAD_WINDOW_MS;
+    return settled
       ? { definition: atStop.definition, cause: null, capturedAt: 'stop' }
-      : { definition: null, cause: atStop.cause, capturedAt: 'stop' };
+      : { definition: null, cause: 'unverified-at-stop', capturedAt: 'stop' };
   }
   if (spawn.spawnedAtMs - spawn.definition.mtimeMs < RELOAD_WINDOW_MS) {
     return { definition: null, cause: 'reload-window', capturedAt: 'spawn' };

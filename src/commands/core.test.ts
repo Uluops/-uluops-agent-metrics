@@ -325,6 +325,16 @@ describe('Core Commands', () => {
       assert.strictEqual(fs.readFileSync(TEST_BUFFER_CONFIG.bufferPath, 'utf8'), before);
     });
 
+    it('X4-2: extract -f tracker emits the captured definition_version under its own name only', async () => {
+      const definition = { name: 'code-auditor', version: '2.7.3', sha256: 'x', path: '/p', captured_at: 'spawn' as const };
+      appendToBuffer(createTestMetrics({ agent_id: 'abc1234' }), { config: TEST_BUFFER_CONFIG, definition });
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'code-auditor', '--no-annotate-buffer']);
+      assert.strictEqual(JSON.parse(output.join('\n')).definition_version, '2.7.3');
+      output.length = 0;
+      await program.parseAsync(['node', 'test', 'extract', 'abc1234', '-f', 'tracker', '-a', 'security-analyst', '--no-annotate-buffer']);
+      assert.ok(!('definition_version' in JSON.parse(output.join('\n'))), 'another name never carries this version');
+    });
+
     it('F7: -a <name> writes the name back to a matching buffer entry', async () => {
       // Pre-populate a buffer entry for abc1234 (nameless)
       const metrics = createTestMetrics({ agent_id: 'abc1234', session_id: 'wb-session-1' });

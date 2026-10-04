@@ -330,8 +330,10 @@ captured by the hooks (see [Definition capture](#definition-capture-v0120)). Spl
 it with the rest of the entry: the tracker credits a run to an agent version only
 when the caller sends that agent's own version, and stores a server-filled
 `inferred-latest` (counted toward no version) when it is absent. It is **omitted**
-whenever the definition could not be named — never guessed — and whenever the entry
-is reported under a different name than the definition's own. The content hash and
+whenever the definition could not be named — never guessed — whenever the entry is
+reported under a different name than the definition's own, and when the label is
+longer than 50 characters (`save_run` rejects the whole call on an over-long value, and
+a truncated label would name a version that does not exist). The content hash and
 path stay in the buffer: `save_run`'s `agents[]` schema is strict and has no field
 for them.
 
@@ -425,15 +427,20 @@ missing throw:
   not-found.
 - **`appendToBuffer`** — never appends to the buffer without its lock. When the lock cannot
   be acquired (after the 5s backoff), the entry is written to its own file in
-  `<buffer>.spill/` and returned (v0.12.0); `readBuffer` includes spilled entries and the
-  next locked append drains them into the buffer. It returns `null` (not a throw) only when
+  `<buffer>.spill/` and returned (v0.12.0); `readBuffer` includes spilled entries, and the
+  next locked append — or any rewrite (`clear*`, `cleanupExpired`, `annotateBufferEntries`)
+  — drains them into the buffer first, so a clear removes spilled entries too. It returns `null` (not a throw) only when
   the spill itself fails. Before v0.12.0 a contended entry was skipped and lost.
 - **`cleanupExpired`, `clearSession`, `clearAgents`, `annotateBufferEntries`** — throw
   `LockAcquisitionError` on lock contention (unlike `appendToBuffer`, these are explicit
   maintenance/query operations, not a fire-and-forget hook capture).
 - **`readBuffer`** — returns `[]` if the buffer file does not exist yet; throws if the file
   exists but cannot be read; silently skips (not throws) individual lines that fail to parse
-  or fail shape validation.
+  or fail shape validation. **Collapses to one entry per `agent_id`** (v0.12.0): a re-woken
+  agent stops more than once, and only the latest capture (by `end_time`, then
+  `captured_at`) is returned — so `readBuffer().length` counts agent instances, not lines.
+  The rewrite operations still act on every raw line: `clearAgents` and
+  `annotateBufferEntries` touch all of an agent's lines.
 
 ### Buffer Functions
 
@@ -493,7 +500,7 @@ const stats = getBufferStats();
 console.log(`Total entries: ${stats.totalEntries}`);
 console.log(`Valid entries: ${stats.validEntries}`);
 
-// Read all entries (including expired) - low-level access
+// One entry per agent instance (including expired); spill files included
 const allEntries = readBuffer();
 
 // Read only valid (non-expired) entries
@@ -830,7 +837,18 @@ Then add the hook to `~/.claude/settings.json` with the matching absolute path:
           {
             "type": "command",
             "command": "node /opt/homebrew/lib/node_modules/@uluops/agent-metrics/dist/hook.js",
-            "timeout": 10
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /opt/homebrew/lib/node_modules/@uluops/agent-metrics/dist/hook.js",
+            "timeout": 30
           }
         ]
       }
@@ -838,6 +856,12 @@ Then add the hook to `~/.claude/settings.json` with the matching absolute path:
   }
 }
 ```
+
+`SubagentStart` (v0.12.0) runs the same script, which dispatches on `hook_event_name`;
+it records the definition each subagent was spawned with (see
+[Definition capture](#definition-capture-v0120)). The 30 s timeout matches what
+`@uluops/setup` installs: the stop path waits up to 3 s for the transcript to settle
+(tracker 74629040), and the old 10 s left little headroom on a loaded machine.
 
 ### Definition capture (v0.12.0)
 
@@ -857,7 +881,9 @@ carries `definition_version` without the orchestrator typing it.
 | unchanged since spawn | `definition` recorded, `captured_at: "spawn"` |
 | file changed between spawn and stop (a reinstall mid-run) | omitted, `definition_unresolved: "changed-during-run"` |
 | file modified within 30s before spawn (Claude Code's reload lag) | omitted, `"reload-window"` |
-| no spawn record (SubagentStart hook not configured) | captured at stop, `captured_at: "stop"` |
+| no spawn record (SubagentStart hook not configured), file untouched for ≥30s before the agent started | captured at stop, `captured_at: "stop"` |
+| no spawn record, file modified later than that (or the start time is unknown) | omitted, `"unverified-at-stop"` |
+| a failure inside the capture itself | omitted, `"capture-error"`; the token metrics are still recorded |
 | no file / no `version:` / several same-level files at different versions | omitted, `"no-file"` / `"no-version"` / `"ambiguous"` |
 | an `[agent:name]` tag naming a different definition than the one that ran | omitted, `"tag-mismatch"` |
 | a plugin-scoped agent type (`plugin:name`) | omitted, `"plugin-scoped"` |
@@ -877,8 +903,8 @@ dispatches on `hook_event_name`):
 ```json
 {
   "hooks": {
-    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node <npm root -g>/@uluops/agent-metrics/dist/hook.js", "timeout": 10 }] }],
-    "SubagentStop":  [{ "hooks": [{ "type": "command", "command": "node <npm root -g>/@uluops/agent-metrics/dist/hook.js", "timeout": 10 }] }]
+    "SubagentStart": [{ "hooks": [{ "type": "command", "command": "node <npm root -g>/@uluops/agent-metrics/dist/hook.js", "timeout": 30 }] }],
+    "SubagentStop":  [{ "hooks": [{ "type": "command", "command": "node <npm root -g>/@uluops/agent-metrics/dist/hook.js", "timeout": 30 }] }]
   }
 }
 ```

@@ -76,10 +76,12 @@ describe('refreshEntriesFromTranscripts', () => {
   });
 
   it('replaces metrics when the transcript covers at least as much of the run', async () => {
+    const asked: string[] = [];
     const [r] = await refreshEntriesFromTranscripts([entry('2026-10-04T10:00:01.000Z', 70)], {
-      find: () => ({ filePath: 'f' }),
-      extract: async () => createTestMetrics({ end_time: '2026-10-04T10:00:02.000Z', tokens: { ...createTestMetrics().tokens, output: 770 } }),
+      find: (id) => { asked.push(id); return { filePath: 'f' }; },
+      extract: async (f) => { assert.strictEqual(f, 'f'); return createTestMetrics({ end_time: '2026-10-04T10:00:02.000Z', tokens: { ...createTestMetrics().tokens, output: 770 } }); },
     });
+    assert.deepStrictEqual(asked, ['abc'], 'looked up by the entry\'s own agent_id');
     assert.strictEqual(r!.metrics.tokens.output, 770);
     assert.strictEqual(r!.metrics.agent_id, 'abc');
   });
