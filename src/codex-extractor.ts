@@ -3,9 +3,9 @@
  */
 
 import * as fs from 'node:fs';
-import * as readline from 'node:readline';
 import type { AgentMetrics } from './types.js';
 import { findCodexAgentFile, calculateDuration, formatDuration } from './utils.js';
+import { readJsonlLines } from './jsonl.js';
 
 interface CodexRecord {
   type?: string;
@@ -312,7 +312,7 @@ function buildMetrics(acc: CodexAccumulator, filePath: string): AgentMetrics {
  *
  * Pre-checks the file with `fs.access` (parity with {@link extractMetricsFromFile}),
  * so a missing/unreadable path surfaces as a wrapped, friendlier message
- * instead of the raw stream error (e.g. ENOENT) from the readline iterator.
+ * instead of the raw stream error (e.g. ENOENT) from the line reader.
  *
  * @param filePath - Path to the Codex rollout JSONL file
  * @returns AgentMetrics object
@@ -327,15 +327,10 @@ export async function extractCodexMetricsFromFile(filePath: string): Promise<Age
     throw new Error(`Unable to read agent metrics file "${filePath}": ${message}`, { cause: error });
   }
 
-  const fileStream = fs.createReadStream(filePath);
-  const rl = readline.createInterface({
-    input: fileStream,
-    crlfDelay: Infinity,
-  });
 
   const acc = createAccumulator();
 
-  for await (const line of rl) {
+  for await (const line of readJsonlLines(filePath)) {
     if (!line.trim()) continue;
 
     try {

@@ -23,7 +23,6 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { extractMetricsFromFile } from './extractor.js';
 import { appendToBuffer } from './buffer.js';
@@ -32,6 +31,7 @@ import { formatModelName } from './utils.js';
 import { confirmAtStop, defaultDefinitionDirs, resolveDefinition, type DefinitionDir } from './definition.js';
 import { defaultSpawnPath, findSpawn, recordSpawn } from './spawns.js';
 import type { BufferDefinition } from './buffer.js';
+import { readJsonlLines } from './jsonl.js';
 
 interface HookInput {
   session_id: string;
@@ -145,12 +145,6 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
     return null;
   }
 
-  const fileStream = fs.createReadStream(expandedPath);
-  const rl = readline.createInterface({
-    input: fileStream,
-    crlfDelay: Infinity,
-  });
-
   let malformedLineCount = 0;
 
   // Reports the malformed-line count exactly once, on whichever exit path is
@@ -169,7 +163,7 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
   };
 
   try {
-    for await (const line of rl) {
+    for await (const line of readJsonlLines(expandedPath)) {
       try {
         const parsed: unknown = JSON.parse(line);
         if (!parsed || typeof parsed !== 'object') continue;
@@ -199,9 +193,6 @@ export async function getFirstUserMessageContent(transcriptPath: string): Promis
       transcript_path: expandedPath,
       error: err instanceof Error ? err.message : String(err),
     });
-  } finally {
-    rl.close();
-    fileStream.destroy();
   }
 
   return null;

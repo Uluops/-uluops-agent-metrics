@@ -3,7 +3,6 @@
  */
 
 import * as fs from 'node:fs';
-import * as readline from 'node:readline';
 import type {
   AgentMetrics,
   RawAgentMessage,
@@ -17,6 +16,7 @@ import {
   calculateDuration,
 } from './utils.js';
 import { extractCodexAgentMetrics } from './codex-extractor.js';
+import { readJsonlLines } from './jsonl.js';
 
 const CODEX_UUIDV7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const REQUIRED_AGENT_MESSAGE_FIELDS = 'timestamp, type, agentId, sessionId, cwd, version, gitBranch';
@@ -234,15 +234,10 @@ export async function extractMetricsFromFile(
     throw new Error(`Unable to read agent metrics file "${filePath}": ${message}`, { cause: error });
   }
 
-  const fileStream = fs.createReadStream(filePath);
-  const rl = readline.createInterface({
-    input: fileStream,
-    crlfDelay: Infinity,
-  });
 
   const acc = createAccumulator();
 
-  for await (const line of rl) {
+  for await (const line of readJsonlLines(filePath)) {
     if (!line.trim()) continue;
 
     try {
