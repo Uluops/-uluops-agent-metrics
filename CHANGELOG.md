@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-19
+
 ### Fixed
 
 - **A transcript record containing a raw U+2028 or U+2029 was dropped, undercounting its tokens.** All three transcript readers (`extractMetricsFromFile`, `extractCodexMetricsFromFile`, and the hook's `getFirstUserMessageContent`) iterated with `node:readline`, which also ends a line at U+2028, U+2029 and a bare `\r`. JSON allows both separators unescaped inside strings and Claude Code writes them raw, so readline cut the record into two halves that both failed `JSON.parse` and were skipped as "malformed" with a stderr warning. They now read through `readJsonlLines` (`src/jsonl.ts`), which splits on `\n` only and drops a trailing `\r`. Measured 2026-10-19: 4 of 642 transcripts from the previous 14 days carried a raw separator, 2 of them subagent transcripts; on those, the pre-fix extractor reported cache-read 6,787,638 vs 7,333,763 (-7.4%) and 36,929,367 vs 37,663,720 (-2.0%), with smaller input, output and cache-creation losses. In the hook the same split could skip the first user message and return a later one, so an `[agent:]`/`[run:]` tag in a prompt containing a separator was missed. Buffer entries captured before this fix keep their old numbers; re-extract to correct them. Control: `src/jsonl.test.ts` fails on 0.12.0 in all three readers (output 10 of 3210, Codex output 1 of 40, the hook returned the second message).
