@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-18
+
 ### Added
 
 - **`tokens.counting: "per-response"`** marks Claude Code figures counted by the rule below. An entry without it was counted per line (≤ 0.12.1). It is not sent in `-f tracker` output, because `save_run`'s `agents[]` schema is strict (transcript-usage-dedupe spec G3: no tracker schema change).
