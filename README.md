@@ -722,6 +722,7 @@ Each JSONL file contains all messages from an agent invocation, including:
 - Assistant responses with token usage (one line per content block; each line of a response repeats its `message.id` and `usage` — see [Each API response is counted once](#each-api-response-is-counted-once-v0130))
 - Tool invocations and results
 - Timestamps for each message
+- Harness records (`attachment`, `system`, and since Claude Code 2.1.3xx `api-request`, `api-request-blob`, `api-request-shape`). These are lines, not messages. The `api-request*` records lack the session fields every message carries, and are skipped without a warning (v0.13.1).
 
 ## Commands Reference
 

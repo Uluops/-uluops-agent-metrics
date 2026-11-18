@@ -452,3 +452,43 @@ describe('usageCountingStats (status)', () => {
   });
 });
 
+
+describe('non-message transcript records (0.13.1)', () => {
+  before(() => fs.mkdirSync(DIR, { recursive: true }));
+  after(() => fs.rmSync(DIR, { recursive: true, force: true }));
+
+  // Shapes measured 2026-11-18 over 2,472 transcripts: every line failing the required-field
+  // check was one of these three types (69,596 lines in 1,912 files), and none carried usage.
+  const apiRequest = JSON.stringify({ type: 'api-request', timestamp: '2026-11-18T00:00:00.000Z', agentId: 'dedupe0000aaaa', sessionId: 's', version: '2.1.316', uuid: 'r1' });
+  const apiBlob = JSON.stringify({ type: 'api-request-blob', agentId: 'dedupe0000aaaa', sessionId: 's', uuid: 'r2' });
+  const apiShape = JSON.stringify({ type: 'api-request-shape', timestamp: '2026-11-18T00:00:00.000Z', agentId: 'dedupe0000aaaa', sessionId: 's', version: '2.1.316', uuid: 'r3' });
+  const attachment = JSON.stringify({ type: 'attachment', timestamp: '2026-11-18T00:00:01.000Z', agentId: 'dedupe0000aaaa', sessionId: 's', cwd: '/x', version: '2.1.316', gitBranch: 'main', uuid: 'a1' });
+
+  async function captureStderr<T>(fn: () => Promise<T>): Promise<{ result: T; stderr: string[] }> {
+    const lines: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try { return { result: await fn(), stderr: lines }; } finally { process.stderr.write = orig; }
+  }
+
+  it('api-request records lacking message fields are skipped without a warning', async () => {
+    const u = U({ input: 1, cw: 10, cr: 0, out: 5 });
+    const { result: m, stderr } = await captureStderr(() => extract('api-request', [apiRequest, apiBlob, line({ id: 'msg_A', usage: u }), apiShape, apiRequest]));
+    assert.deepStrictEqual(stderr, []);
+    assert.strictEqual(m.tokens.total_effective, 16);
+    assert.strictEqual(m.execution.line_count, 1, 'skipped records are not counted as lines');
+  });
+
+  it('a user or assistant line missing required fields still warns (a real message would be lost)', async () => {
+    const broken = JSON.stringify({ type: 'assistant', timestamp: '2026-11-18T00:00:00.000Z', agentId: 'x', sessionId: 's', message: { id: 'm', usage: U({ input: 1, cw: 1, cr: 1, out: 1 }) } });
+    const { stderr } = await captureStderr(() => extract('broken-assistant', [line({ type: 'user' }), broken]));
+    assert.strictEqual(stderr.filter(l => /missing required fields/.test(l)).length, 1);
+  });
+
+  it('attachment lines are not messages: message_count = responses + user/tool_result lines only (G2)', async () => {
+    const u = U({ input: 1, cw: 1, cr: 1, out: 1 });
+    const m = await extract('attachments', [line({ type: 'user' }), attachment, attachment, line({ id: 'msg_A', usage: u }), line({ type: 'tool_result' })]);
+    assert.strictEqual(m.execution.message_count, 1 /* user */ + 1 /* tool_result */ + 1 /* msg_A */);
+    assert.strictEqual(m.execution.line_count, 5, 'attachments are still lines');
+  });
+});

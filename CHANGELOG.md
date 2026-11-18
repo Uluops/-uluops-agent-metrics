@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-18
+
+0.13.0 was validated on a local registry only and never published to npm. Upgrading from 0.12.1, read the 0.13.0 entry below as well: this release carries it.
+
+### Fixed
+
+- **Harness records no longer print a warning per line.** Claude Code 2.1.3xx writes `api-request`, `api-request-blob` and `api-request-shape` records into subagent transcripts without `cwd`/`gitBranch`. The blob records also lack `timestamp`/`version`. Each one failed the required-field check and printed `Skipping message with missing required fields`. Measured 2026-11-18: 69,596 such lines in 1,912 of 2,472 transcripts. They were the only lines failing the check, and none carried usage. `buffer list -f tracker` on a three-agent run printed 104 lines of stderr, burying the 0.13.0 warnings about legacy counts and usage regressions. Such records are now skipped silently. A line still warns when it is message-typed (`user`, `assistant`, `tool_result`), untyped, or carries `message.usage`, because skipping it would lose data. Token figures are unchanged: the extractor still agrees with the census on every transcript.
+- **`execution.message_count` no longer counts `attachment` and `system` records.** 0.13.0 counted every non-assistant line that passed validation as a message, including 52,939 `attachment` records, although the README and the spec (G2) define it as assistant responses plus user and tool_result lines. Those records are still counted in `line_count`. Controls: two of the three new tests in `src/usage-dedupe.test.ts` fail on 0.13.0. The third, "a user or assistant line missing required fields still warns", guards behaviour that must not change and passes on both.
+
 ## [0.13.0] - 2026-11-18
 
 ### Added

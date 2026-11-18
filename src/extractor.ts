@@ -59,6 +59,28 @@ function isValidAgentMessage(obj: unknown): obj is RawAgentMessage {
   return true;
 }
 
+/** The record types this extractor reads. Anything else is a harness record, not a message. */
+const MESSAGE_TYPES: ReadonlySet<string> = new Set(['user', 'assistant', 'tool_result']);
+
+/**
+ * A record that fails the field check but is not a message and carries no usage, so skipping
+ * it loses nothing and needs no warning. Claude Code ≥ 2.1.3xx writes `api-request`,
+ * `api-request-blob` and `api-request-shape` records into subagent transcripts without
+ * `cwd`/`gitBranch` (the blob also without `timestamp`/`version`). Measured 2026-11-18:
+ * 69,596 such lines in 1,912 of 2,472 transcripts, none with usage, and they were the ONLY
+ * lines failing the check. Each one printed a warning, so `-f tracker` emitted dozens of
+ * lines of stderr per agent and buried the warnings that matter (0.13.1). A message-typed
+ * line, an untyped line, or any line carrying `message.usage` still warns: losing one of
+ * those loses data.
+ */
+function isSilentNonMessage(obj: unknown): boolean {
+  if (!obj || typeof obj !== 'object') return false;
+  const rec = obj as Record<string, unknown>; // safe: guarded by typeof check above
+  if (typeof rec['type'] !== 'string' || MESSAGE_TYPES.has(rec['type'])) return false;
+  const message = rec['message'];
+  return !(message && typeof message === 'object' && 'usage' in message);
+}
+
 /**
  * Extract metrics from an agent session file
  *
@@ -111,7 +133,7 @@ interface MetricsAccumulator {
   lastMessage: RawAgentMessage | null;
   models: Set<string>;
   lineCount: number;
-  /** user and tool_result lines: each is its own message. */
+  /** user and tool_result lines: each is its own message. Other record types are not counted. */
   otherLines: number;
   /** Distinct assistant responses, keyed as `responseKey` keys them. */
   assistantResponses: Set<string>;
@@ -241,8 +263,10 @@ function accumulateToolUses(acc: MetricsAccumulator, content: unknown[]): void {
 function processMessage(acc: MetricsAccumulator, message: RawAgentMessage): void {
   const key = responseKey(message, acc.lineCount);
   acc.lineCount++;
+  // G2: messages are assistant responses plus user and tool_result lines. Other record types
+  // that pass validation (e.g. `attachment`, `system`) are lines, not messages (0.13.1).
   if (message.type === 'assistant') acc.assistantResponses.add(key);
-  else acc.otherLines++;
+  else if (message.type === 'user' || message.type === 'tool_result') acc.otherLines++;
 
   if (!acc.firstMessage) acc.firstMessage = message;
   acc.lastMessage = message;
@@ -353,7 +377,9 @@ export async function extractMetricsFromFile(
     try {
       const parsed = JSON.parse(line);
       if (!isValidAgentMessage(parsed)) {
-        process.stderr.write(`Warning: Skipping message with missing required fields in ${filePath}; expected ${REQUIRED_AGENT_MESSAGE_FIELDS}\n`);
+        if (!isSilentNonMessage(parsed)) {
+          process.stderr.write(`Warning: Skipping message with missing required fields in ${filePath}; expected ${REQUIRED_AGENT_MESSAGE_FIELDS}\n`);
+        }
         continue;
       }
       processMessage(acc, parsed);
