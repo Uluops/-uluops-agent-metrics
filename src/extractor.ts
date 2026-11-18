@@ -93,16 +93,35 @@ function safeNum(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
+/** One API response's usage, as four non-negative-or-zero numbers. */
+interface UsageSnap {
+  input: number;
+  output: number;
+  cacheCreation: number;
+  cacheRead: number;
+}
+
+/** What the fold keeps per response: the first, latest and highest usage seen on its lines. */
+interface ResponseUsage {
+  first: UsageSnap;
+  last: UsageSnap;
+  high: UsageSnap;
+  conflicted: boolean;
+  regressed: boolean;
+}
+
 /** Mutable accumulators used during JSONL parsing */
 interface MetricsAccumulator {
   firstMessage: RawAgentMessage | null;
   lastMessage: RawAgentMessage | null;
   models: Set<string>;
-  messageCount: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
+  lineCount: number;
+  /** user and tool_result lines: each is its own message. */
+  otherLines: number;
+  /** Distinct assistant responses, keyed as `responseKey` keys them. */
+  assistantResponses: Set<string>;
+  /** Usage per response (8fe868d4): summed once per key in buildMetrics, never per line. */
+  responses: Map<string, ResponseUsage>;
   toolUseCount: number;
   toolBreakdown: Record<string, number>;
   errorCount: number;
@@ -113,24 +132,73 @@ function createAccumulator(): MetricsAccumulator {
     firstMessage: null,
     lastMessage: null,
     models: new Set(),
-    messageCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
+    lineCount: 0,
+    otherLines: 0,
+    assistantResponses: new Set(),
+    responses: new Map(),
     toolUseCount: 0,
     toolBreakdown: {},
     errorCount: 0,
   };
 }
 
-/** Accumulate token usage from a message's usage field */
-function accumulateTokens(acc: MetricsAccumulator, usage: NonNullable<RawAgentMessage['message']>['usage']): void {
+/**
+ * Which API response a line belongs to (spec R1): `message.id`, else the top-level
+ * `requestId`, else the line itself. Claude Code writes one line per content block
+ * (thinking, text, each tool_use) and repeats the response's id and full `usage` on every
+ * one, so the id, not the line, is the unit usage is counted in. The prefixes keep an id and
+ * a requestId that happen to be equal strings apart.
+ */
+function responseKey(message: RawAgentMessage, line: number): string {
+  const id = message.message?.id;
+  if (typeof id === 'string' && id !== '') return `id:${id}`;
+  if (typeof message.requestId === 'string' && message.requestId !== '') return `req:${message.requestId}`;
+  return `line:${String(line)}`;
+}
+
+function snapOf(usage: NonNullable<NonNullable<RawAgentMessage['message']>['usage']>): UsageSnap {
+  return {
+    input: safeNum(usage.input_tokens),
+    output: safeNum(usage.output_tokens),
+    cacheCreation: safeNum(usage.cache_creation_input_tokens),
+    cacheRead: safeNum(usage.cache_read_input_tokens),
+  };
+}
+
+const SNAP_KEYS = ['input', 'output', 'cacheCreation', 'cacheRead'] as const;
+
+/**
+ * Record a line's usage against its response (tracker 8fe868d4; spec R2). The LAST repeat
+ * wins: measured 2026-10-30 over 1,944 transcripts, repeats that differ (11,101 responses)
+ * differ only in `output_tokens`, always non-decreasing, the last line the maximum. Early
+ * lines carry partial output; first-wins would undercount by 9.8 M effective tokens. A repeat
+ * that differs from the first marks the response `conflicted` (expected); a repeat lower than
+ * an earlier one in any component marks it `regressed` (never observed: it would mean Claude
+ * Code changed how it writes usage, and last-wins could undercount). Both are counted so that
+ * change shows up as a number.
+ */
+function recordUsage(acc: MetricsAccumulator, key: string, usage: NonNullable<RawAgentMessage['message']>['usage']): void {
   if (!usage) return;
-  acc.inputTokens += safeNum(usage.input_tokens);
-  acc.outputTokens += safeNum(usage.output_tokens);
-  acc.cacheCreationTokens += safeNum(usage.cache_creation_input_tokens);
-  acc.cacheReadTokens += safeNum(usage.cache_read_input_tokens);
+  const now = snapOf(usage);
+  const seen = acc.responses.get(key);
+  if (!seen) {
+    acc.responses.set(key, { first: now, last: now, high: now, conflicted: false, regressed: false });
+    return;
+  }
+  const differs = SNAP_KEYS.some(k => now[k] !== seen.first[k]);
+  const falls = SNAP_KEYS.some(k => now[k] < seen.high[k]);
+  acc.responses.set(key, {
+    first: seen.first,
+    last: now,
+    high: {
+      input: Math.max(now.input, seen.high.input),
+      output: Math.max(now.output, seen.high.output),
+      cacheCreation: Math.max(now.cacheCreation, seen.high.cacheCreation),
+      cacheRead: Math.max(now.cacheRead, seen.high.cacheRead),
+    },
+    conflicted: seen.conflicted || differs,
+    regressed: seen.regressed || falls,
+  });
 }
 
 /** Count tool uses from assistant message content blocks */
@@ -144,9 +212,16 @@ function accumulateToolUses(acc: MetricsAccumulator, content: unknown[]): void {
   }
 }
 
-/** Process a single validated message into the accumulator */
+/**
+ * Process a single validated message into the accumulator. Usage and the message count are
+ * per response; tool, error, model and timing counts stay per line/block (spec R3): each
+ * content block appears on exactly one line, so those were never duplicated.
+ */
 function processMessage(acc: MetricsAccumulator, message: RawAgentMessage): void {
-  acc.messageCount++;
+  const key = responseKey(message, acc.lineCount);
+  acc.lineCount++;
+  if (message.type === 'assistant') acc.assistantResponses.add(key);
+  else acc.otherLines++;
 
   if (!acc.firstMessage) acc.firstMessage = message;
   acc.lastMessage = message;
@@ -155,7 +230,7 @@ function processMessage(acc: MetricsAccumulator, message: RawAgentMessage): void
     acc.models.add(message.message.model);
   }
 
-  accumulateTokens(acc, message.message?.usage);
+  recordUsage(acc, key, message.message?.usage);
 
   if (message.type === 'assistant' && message.message?.content && Array.isArray(message.message.content)) {
     accumulateToolUses(acc, message.message.content);
@@ -178,6 +253,16 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
   const last = acc.lastMessage;
   const durationMs = calculateDuration(first.timestamp, last.timestamp);
 
+  let input = 0, output = 0, cacheCreation = 0, cacheRead = 0, conflicts = 0, regressions = 0;
+  for (const r of acc.responses.values()) {
+    input += r.last.input;
+    output += r.last.output;
+    cacheCreation += r.last.cacheCreation;
+    cacheRead += r.last.cacheRead;
+    if (r.conflicted) conflicts++;
+    if (r.regressed) regressions++;
+  }
+
   return {
     harness: 'claude-code',
     agent_id: first.agentId,
@@ -193,20 +278,24 @@ function buildMetrics(acc: MetricsAccumulator): AgentMetrics {
     duration_ms: durationMs,
     duration_formatted: formatDuration(durationMs),
     tokens: {
-      input: acc.inputTokens,
-      output: acc.outputTokens,
-      cache_creation: acc.cacheCreationTokens,
-      cache_read: acc.cacheReadTokens,
+      input,
+      output,
+      cache_creation: cacheCreation,
+      cache_read: cacheRead,
       // Canonical effective total (see TokenMetrics.total_effective in types.ts):
       // (input − cached_input) + output_gross + cache_creation. Claude's `input`
       // is already non-cached (cache reads are the separate cache_read field) and
       // it has no cached_input term (0), so this is commensurable with the Codex
       // formula in codex-extractor.ts, which carries cached_input instead.
-      total_effective: acc.inputTokens + acc.cacheCreationTokens + acc.outputTokens,
-      total_raw: acc.inputTokens + acc.outputTokens + acc.cacheCreationTokens + acc.cacheReadTokens,
+      total_effective: input + cacheCreation + output,
+      total_raw: input + output + cacheCreation + cacheRead,
+      counting: 'per-response',
     },
     execution: {
-      message_count: acc.messageCount,
+      message_count: acc.assistantResponses.size + acc.otherLines,
+      line_count: acc.lineCount,
+      usage_conflicts: conflicts,
+      usage_regressions: regressions,
       tool_use_count: acc.toolUseCount,
       tool_breakdown: acc.toolBreakdown,
       error_count: acc.errorCount,

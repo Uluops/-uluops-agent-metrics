@@ -246,10 +246,14 @@ Complete metrics object:
     "cache_creation": 63236,
     "cache_read": 315202,
     "total_effective": 65413,
-    "total_raw": 380615
+    "total_raw": 380615,
+    "counting": "per-response"
   },
   "execution": {
     "message_count": 30,
+    "line_count": 41,
+    "usage_conflicts": 2,
+    "usage_regressions": 0,
     "tool_use_count": 13,
     "tool_breakdown": { "Bash": 12, "Read": 1 },
     "error_count": 0
@@ -345,6 +349,20 @@ for them.
 | `total_raw` | All tokens summed | Codex-reported `total_tokens` | True total processed |
 
 **Note:** Cache reads are excluded from Claude `total_effective` because they're significantly cheaper than other token types. Codex cached input is likewise subtracted (the analog of Claude's excluded cache read). `reasoning_output` (and `thinking`/`tool`) are **subsets of gross `output`** — stored for cost breakdown but **never added** to `total_effective` (v0.6.0 removed the prior `+ reasoning_output` double-count). OpenAI cached input is discounted rather than free, so cross-provider cost rollups should re-price from raw provider token fields.
+
+### Each API response is counted once (v0.13.0)
+
+Claude Code writes one transcript line per content block (thinking, text, each `tool_use`), and every line of one API response repeats that response's `message.id`, `requestId` and full `usage`. Summing `usage` per line therefore counts a response once per block. Up to 0.12.1 agent-metrics did exactly that, and its Claude Code token figures ran about 2× high: 2.10× across 1,944 transcripts on 2026-10-30, 2.26× across 2,466 on 2026-11-18, with the ratio varying by agent with how many blocks its responses carry.
+
+From 0.13.0 the Claude extractor folds usage per response:
+
+- **Key:** `message.id`; else the line's `requestId`; else the line itself (counted once, as before).
+- **Last repeat wins.** Repeats that differ differ only in `output_tokens`, which rises from a partial count to the full one, with the last line the maximum (11,101 of 11,101 conflicting responses on 2026-10-30; 4,217 of 4,217 on 2026-11-18). `execution.usage_conflicts` counts those responses. `execution.usage_regressions` counts responses where a later repeat was *lower* than an earlier one in any component. None has been observed. A non-zero value means Claude Code changed how it writes usage and the rule needs review; `agent-metrics status` prints it.
+- **Not deduplicated:** tool counts, tool breakdown, error count, model and timestamps. Each block appears on exactly one line.
+- **`execution.message_count`** is distinct assistant responses plus user and `tool_result` lines. `execution.line_count` is the raw line count (what `message_count` meant before 0.13.0).
+- **`tokens.counting: "per-response"`** marks figures counted this way. An entry without it was counted per line. Buffer entries are re-extracted from their transcript by `buffer list -f tracker` / `buffer session -f tracker` while the transcript exists. An entry whose transcript is gone keeps its old figures, because nothing remains to recount it from. The marker is not sent in `-f tracker` output: the tracker's `agents[]` schema is strict, so tracker rows saved before and after the upgrade cannot be told apart row by row.
+
+Codex extraction is unaffected: it reads the session's cumulative usage snapshot and never sums lines.
 
 **Edge cases:**
 - When `cache_creation` is 0 (no new context cached), `total_effective` equals `input + output`
@@ -458,6 +476,10 @@ import {
   readBuffer,
   readValidEntries,
   entriesToTrackerFormat,
+  trackerDefinitionVersion,       // the definition_version -f tracker emits for an entry, or undefined (v0.12.0)
+  TRACKER_DEFINITION_VERSION_MAX, // save_run's length limit for definition_version (50)
+  definitionCaptureStats,         // definition-capture counters behind `agent-metrics status` (v0.12.0)
+  usageCountingStats,             // per-response vs legacy entries, usage conflicts/regressions (v0.13.0)
   LockAcquisitionError, // thrown by the four rewrite ops under lock contention
 } from '@uluops/agent-metrics';
 
@@ -666,6 +688,9 @@ import type {
   BufferStats,
   AppendOptions,
   BufferQuery,
+  BufferDefinition,
+  DefinitionCaptureStats,
+  UsageCountingStats,
   // Format types
   ExtractFormat,
   BufferFormat,
@@ -691,7 +716,7 @@ Codex subagent rollout files are stored at:
 
 Each JSONL file contains all messages from an agent invocation, including:
 - User prompts
-- Assistant responses with token usage
+- Assistant responses with token usage (one line per content block; each line of a response repeats its `message.id` and `usage` — see [Each API response is counted once](#each-api-response-is-counted-once-v0130))
 - Tool invocations and results
 - Timestamps for each message
 

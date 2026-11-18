@@ -72,6 +72,7 @@ export {
   entriesToTrackerFormat,
   trackerDefinitionVersion,
   definitionCaptureStats,
+  usageCountingStats,
   TRACKER_DEFINITION_VERSION_MAX,
 } from './buffer.js';
 
@@ -84,6 +85,7 @@ export type {
   BufferQuery,
   BufferDefinition,
   DefinitionCaptureStats,
+  UsageCountingStats,
 } from './buffer.js';
 
 // Lock primitives. LockAcquisitionError is the catchable contract for the

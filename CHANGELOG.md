@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`tokens.counting: "per-response"`** marks Claude Code figures counted by the rule below. An entry without it was counted per line (≤ 0.12.1). It is not sent in `-f tracker` output, because `save_run`'s `agents[]` schema is strict (transcript-usage-dedupe spec G3: no tracker schema change).
+- **`execution.line_count`, `execution.usage_conflicts`, `execution.usage_regressions`** (Claude Code only). `usage_conflicts` counts responses whose repeated lines carried differing `usage`. That is expected: early lines carry partial `output_tokens`. `usage_regressions` counts responses where a later repeat was lower than an earlier one. It has never been observed; a non-zero value means Claude Code changed how it writes usage and the last-wins rule needs review.
+- **`usageCountingStats`** (and the `UsageCountingStats` type), plus a "Token counting" block in `agent-metrics status`: per-response vs legacy entries, conflicts, and regressions.
+- README now documents `trackerDefinitionVersion`, `TRACKER_DEFINITION_VERSION_MAX`, `definitionCaptureStats`, `BufferDefinition` and `DefinitionCaptureStats`. These were exported in 0.12.0 but missing from the README import blocks, so `npm run check:readme-exports` failed on `main`.
+
+### Changed
+
+- **`execution.message_count` counts messages, not lines.** It is now distinct assistant responses plus user and `tool_result` lines. The old line count is `execution.line_count`. The field keeps its type and name and changes its meaning, so a consumer comparing `message_count` across the upgrade sees it drop with no other signal.
+
+### Fixed
+
+- **Claude Code token usage was counted once per content block, about 2× high** (tracker 8fe868d4; spec `transcript-usage-dedupe` v0.1.1). Claude Code writes one transcript line per content block (thinking, text, each `tool_use`), and every line of one API response repeats its `message.id`, `requestId` and full `usage`. `accumulateTokens` added `usage` for every line, so all four components, `total_effective` and `total_raw` were multiplied by the response's block count. The extractor now keys usage by `message.id`, then `requestId`, then the line itself, and counts each response once. When repeats differ, the last one wins: across 1,944 transcripts on 2026-10-30, every differing repeat (11,101 responses) differed only in `output_tokens`, rising from partial to full with the last line the maximum, and first-wins would have undercounted by 9.8 M effective tokens. Tool, error, model and timing counts are unchanged; each block appears on exactly one line.
+  - **Measured.** On 2,466 local subagent transcripts (Claude Code 2.1.280–2.1.316, 2026-11-18), the old extractor summed `total_effective` 934,712,545 against 413,650,927 per response (**2.26×**). Per agent the ratio runs from 1.0 (single-block responses) to about 2.8. The agent-pane-spec run #27 architect (`agent-ac92cff76935e8dc3`) drops from 469,668 to **229,223**, which matches the agent-pane's own per-message fold; the docs-validator (`agent-ac5c6870c4372b011`) drops from 155,357 to 95,644.
+  - **Verified against an independent oracle.** The spec's census (`transcript-usage-census.py`, stdlib Python that does not import this package, with a planted control) agrees with the new extractor on every component of all 2,466 transcripts. 0.12.1 disagrees on 2,447, exactly the census's count of affected files.
+  - **Control.** `src/usage-dedupe.test.ts` fails 9 of its 15 tests on 0.12.1: a response written as three lines reports 3× its usage, `requestId` is not used as a key, and the markers are absent. The 6 that pass on 0.12.1 cover behaviour that must not change: lines without an id, tool and error counts, the tracker wire, and the refresh path.
+
+### Upgrade impact
+
+- **Claude Code token figures fall, by about half on a tool-heavy workload.** Figures from before and after the upgrade are not comparable. This includes every tracker `agents[].tokens` row spliced from `agent-metrics … -f tracker` before 0.13.0. Codex figures are unchanged: they come from a cumulative snapshot and never summed lines.
+- **Buffer entries correct themselves while their transcript exists.** `buffer list -f tracker` and `buffer session -f tracker` already re-extract from the transcript (0.12.0), so they emit the per-response count on the first read after the upgrade. An entry whose transcript is gone (Claude Code deletes transcripts after `cleanupPeriodDays`, default 30) keeps its inflated figures and shows as `legacy` in `agent-metrics status`.
+- **Stored tracker rows are not rewritten by this release.** The spec's decision (G3 = c) is to recompute the rows a surviving transcript can prove, record them in a ledger, and record the cutover for the rest. That is a separate, owner-run step. No global correction factor is applied, because the inflation varies per agent.
+
 ## [0.12.1] - 2026-10-19
 
 ### Fixed

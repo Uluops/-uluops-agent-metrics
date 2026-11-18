@@ -38,6 +38,14 @@ export interface TokenMetrics {
   total_effective: number;
   /** Raw total: all tokens summed */
   total_raw: number;
+  /**
+   * How a Claude Code transcript's usage was counted (0.13.0, tracker 8fe868d4).
+   * `per-response`: each API response once, keyed by `message.id`, then `requestId`, then the
+   * line itself; the last repeat wins. Absent: an older figure summed per transcript line,
+   * which counts a response once per content block (~2x on tool-heavy agents). Never sent to
+   * the Tracker: its `agents[]` schema is strict, and the cutover is recorded instead (spec G3).
+   */
+  counting?: 'per-response';
 }
 
 /**
@@ -51,8 +59,27 @@ export interface ToolBreakdown {
  * Execution statistics for an agent run
  */
 export interface ExecutionMetrics {
-  /** Total number of messages/lines in the JSONL file */
+  /**
+   * Messages: distinct assistant responses plus user and tool_result lines (0.13.0). Before
+   * 0.13.0 this counted transcript lines, and a response written as several lines (one per
+   * content block) counted once per line. The raw line count is `line_count`.
+   */
   message_count: number;
+  /** Valid transcript lines read (Claude Code only; 0.13.0). */
+  line_count?: number;
+  /**
+   * Responses whose repeated lines carried differing `usage` (Claude Code only; 0.13.0).
+   * Expected and harmless: early lines carry partial `output_tokens`, the last line the full
+   * count (census C-1b, 2026-10-30), and the last line wins.
+   */
+  usage_conflicts?: number;
+  /**
+   * Responses where a later repeat was LOWER than an earlier one in some component
+   * (Claude Code only; 0.13.0). Never observed (0 of 11,101 conflicting responses, census
+   * C-1b). Non-zero means Claude Code changed how it writes usage, and last-wins may now
+   * undercount: the counting rule needs review.
+   */
+  usage_regressions?: number;
   /** Number of tool invocations */
   tool_use_count: number;
   /** Breakdown of tool usage by tool name */
@@ -138,6 +165,8 @@ export interface RawAgentMessage {
     role: string;
     content: unknown[];
     model?: string;
+    /** API response id. Every line written for one response repeats it (one line per content block). */
+    id?: string;
     usage?: {
       input_tokens: number;
       output_tokens: number;

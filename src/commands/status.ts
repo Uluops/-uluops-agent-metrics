@@ -5,7 +5,7 @@
  */
 
 import { Command, Option } from 'commander';
-import { definitionCaptureStats, queryBuffer, readSpill } from '../buffer.js';
+import { definitionCaptureStats, queryBuffer, readSpill, usageCountingStats } from '../buffer.js';
 import { displayBufferStatus, formatReport } from '../display/formatters.js';
 import type { MetricsProvider } from '../types.js';
 
@@ -20,7 +20,8 @@ export function registerStatusCommands(program: Command): void {
     .action(() => {
       displayBufferStatus('Agent Metrics Buffer');
       // X4-5: definition capture, so a silent failure has a number.
-      const s = definitionCaptureStats(queryBuffer({ includeExpired: false }), readSpill().length);
+      const live = queryBuffer({ includeExpired: false });
+      const s = definitionCaptureStats(live, readSpill().length);
       const causes = Object.entries(s.unresolvedByCause).map(([k, v]) => `${k} ${String(v)}`).join(', ') || 'none';
       console.log('\nDefinition capture (X4)');
       console.log(`  with version:     ${String(s.withVersion)} of ${String(s.entries)} (spawn ${String(s.capturedAtSpawn)}, stop ${String(s.capturedAtStop)})`);
@@ -28,6 +29,12 @@ export function registerStatusCommands(program: Command): void {
       console.log(`  no agent name:    ${String(s.noAgentName)}`);
       console.log(`  before capture:   ${String(s.preCapture)}`);
       console.log(`  spilled (locked): ${String(s.spilled)}`);
+      // 8fe868d4: a regression means Claude Code changed how a response's lines repeat usage.
+      const u = usageCountingStats(live);
+      console.log('\nToken counting (per response)');
+      console.log(`  per-response:     ${String(u.perResponse)} of ${String(u.entries)} (legacy per-line ${String(u.legacy)})`);
+      console.log(`  usage conflicts:  ${String(u.usageConflicts)} (partial-then-full repeats; expected)`);
+      console.log(`  regressions:      ${String(u.usageRegressions)} in ${String(u.entriesWithRegressions)} entries${u.usageRegressions > 0 ? ' — REVIEW the last-wins rule' : ''}`);
     });
 
   // Top-level report command - show recent entries in a nice format

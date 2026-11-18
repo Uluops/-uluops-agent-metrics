@@ -1131,6 +1131,39 @@ export async function refreshEntriesFromTranscripts(
   return out;
 }
 
+// ── Usage counting (8fe868d4) ───────────────────────────────────────────
+
+export interface UsageCountingStats {
+  entries: number;
+  /** Entries counted per response (0.13.0+). */
+  perResponse: number;
+  /** Entries summed per transcript line (before 0.13.0): tokens ~2x high, transcript gone or not yet refreshed. */
+  legacy: number;
+  /** Responses whose repeats differed, summed over entries. Expected: partial-then-full output. */
+  usageConflicts: number;
+  /** Responses where a later repeat fell below an earlier one, summed over entries. Expected 0. */
+  usageRegressions: number;
+  entriesWithRegressions: number;
+}
+
+/**
+ * Counters for the per-response rule (tracker 8fe868d4, spec R2): a non-zero regression
+ * count means Claude Code changed how it repeats usage across a response's lines, so the
+ * last-wins rule needs review. `legacy` says how many buffered figures still carry the
+ * per-line inflation (Codex entries count as legacy: they carry no marker).
+ */
+export function usageCountingStats(entries: readonly BufferEntry[]): UsageCountingStats {
+  const s: UsageCountingStats = { entries: entries.length, perResponse: 0, legacy: 0, usageConflicts: 0, usageRegressions: 0, entriesWithRegressions: 0 };
+  for (const e of entries) {
+    if (e.metrics.tokens.counting === 'per-response') s.perResponse++; else s.legacy++;
+    s.usageConflicts += e.metrics.execution.usage_conflicts ?? 0;
+    const r = e.metrics.execution.usage_regressions ?? 0;
+    s.usageRegressions += r;
+    if (r > 0) s.entriesWithRegressions++;
+  }
+  return s;
+}
+
 // ── Capture counters (X4-5) ─────────────────────────────────────────────
 
 export interface DefinitionCaptureStats {
