@@ -73,6 +73,8 @@ export {
   trackerDefinitionVersion,
   definitionCaptureStats,
   usageCountingStats,
+  trackerSpliceWarnings,
+  isLegacyClaudeCount,
   TRACKER_DEFINITION_VERSION_MAX,
 } from './buffer.js';
 

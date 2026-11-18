@@ -13,6 +13,7 @@ import {
   cleanupExpired,
   entriesToTrackerFormat,
   refreshEntriesFromTranscripts,
+  trackerSpliceWarnings,
 } from '../buffer.js';
 import {
   displayBufferStatus,
@@ -138,7 +139,9 @@ export function registerBufferCommands(program: Command): void {
       if (options.format === 'tracker') {
         // Output format ready for validation tracker with full cache breakdown.
         // 74629040: metrics come from the transcript when it still exists.
-        console.log(JSON.stringify(entriesToTrackerFormat(await refreshEntriesFromTranscripts(entries)), null, 2));
+        const refreshed = await refreshEntriesFromTranscripts(entries);
+        for (const w of trackerSpliceWarnings(refreshed)) console.error(w);
+        console.log(JSON.stringify(entriesToTrackerFormat(refreshed), null, 2));
         return;
       }
 
@@ -161,7 +164,9 @@ export function registerBufferCommands(program: Command): void {
       if (options.format === 'tracker') {
         // Output format ready for validation tracker with full cache breakdown.
         // 74629040: metrics come from the transcript when it still exists.
-        console.log(JSON.stringify(entriesToTrackerFormat(await refreshEntriesFromTranscripts(entries)), null, 2));
+        const refreshed = await refreshEntriesFromTranscripts(entries);
+        for (const w of trackerSpliceWarnings(refreshed)) console.error(w);
+        console.log(JSON.stringify(entriesToTrackerFormat(refreshed), null, 2));
         return;
       }
 

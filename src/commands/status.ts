@@ -32,7 +32,7 @@ export function registerStatusCommands(program: Command): void {
       // 8fe868d4: a regression means Claude Code changed how a response's lines repeat usage.
       const u = usageCountingStats(live);
       console.log('\nToken counting (per response)');
-      console.log(`  per-response:     ${String(u.perResponse)} of ${String(u.entries)} (legacy per-line ${String(u.legacy)})`);
+      console.log(`  per-response:     ${String(u.perResponse)} of ${String(u.entries)} (legacy per-line ${String(u.legacy)}, codex ${String(u.codex)})`);
       console.log(`  usage conflicts:  ${String(u.usageConflicts)} (partial-then-full repeats; expected)`);
       console.log(`  regressions:      ${String(u.usageRegressions)} in ${String(u.entriesWithRegressions)} entries${u.usageRegressions > 0 ? ' — REVIEW the last-wins rule' : ''}`);
     });

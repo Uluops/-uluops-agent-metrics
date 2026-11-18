@@ -1112,10 +1112,12 @@ export async function refreshEntriesFromTranscripts(
   deps: {
     find?: (agentId: string, projectPath?: string) => { filePath: string } | null;
     extract?: (filePath: string) => Promise<AgentMetrics>;
+    warn?: (line: string) => void;
   } = {},
 ): Promise<BufferEntry[]> {
   const find = deps.find ?? (await import('./utils.js')).findAgentFile;
   const extract = deps.extract ?? (await import('./extractor.js')).extractMetricsFromFile;
+  const warn = deps.warn ?? ((line: string) => { process.stderr.write(`${line}\n`); });
   const out: BufferEntry[] = [];
   for (const e of entries) {
     try {
@@ -1124,21 +1126,59 @@ export async function refreshEntriesFromTranscripts(
       const fresh = await extract(loc.filePath);
       const covers = !e.end_time || (fresh.end_time ?? '') >= e.end_time;
       out.push(covers ? { ...e, metrics: { ...fresh, agent_id: e.agent_id } } : e);
-    } catch {
+    } catch (err) {
+      // Not silent (review run #11): since 0.13.0 the stored capture this falls back to may be a
+      // per-line (~2x) figure, and -f tracker output carries no marker that would show it.
+      warn(`Warning: could not re-extract ${e.agent_id} from its transcript (${err instanceof Error ? err.message : String(err)}); keeping the stored capture${isLegacyClaudeCount(e) ? ', counted per line before 0.13.0 (tokens ~2x high)' : ''}`);
       out.push(e);
     }
   }
   return out;
 }
 
+/** A Claude Code entry counted per transcript line (before 0.13.0). Codex entries never were. */
+export function isLegacyClaudeCount(e: BufferEntry): boolean {
+  return e.metrics.harness !== 'codex' && e.metrics.tokens.counting !== 'per-response';
+}
+
+/**
+ * Warnings for the `-f tracker` splice path, written to stderr so the JSON on stdout stays
+ * clean (review run #11: the per-response counters were visible only in `agent-metrics
+ * status`, which nobody runs before `save_run`). Call on the entries AFTER the refresh:
+ * - a legacy Claude entry still carries the per-line (~2x) figures, typically because its
+ *   transcript is gone. The tracker row cannot be marked (strict `agents[]` schema), so this
+ *   is the only place the inflation can be seen before it is saved;
+ * - a non-zero `usage_regressions` means a later repeat of a response was lower than an earlier
+ *   one. Last-wins may then undercount, and the counting rule needs review.
+ */
+export function trackerSpliceWarnings(entries: readonly BufferEntry[]): string[] {
+  const out: string[] = [];
+  const legacy = entries.filter(isLegacyClaudeCount).map(e => e.agent_id);
+  if (legacy.length > 0) {
+    out.push(`Warning: ${String(legacy.length)} of ${String(entries.length)} entries are counted per transcript line (before 0.13.0; tokens ~2x high) and could not be recounted: ${legacy.join(', ')}`);
+  }
+  for (const e of entries) {
+    const r = num(e.metrics.execution.usage_regressions);
+    if (r > 0) out.push(`Warning: ${e.agent_id}: ${String(r)} response(s) had a later usage repeat lower than an earlier one; the last-wins count may be low. Review the counting rule (agent-metrics README, "Each API response is counted once").`);
+  }
+  return out;
+}
+
+/** A finite number, else 0: buffer fields read here are optional and unvalidated on read. */
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
 // ── Usage counting (8fe868d4) ───────────────────────────────────────────
 
 export interface UsageCountingStats {
   entries: number;
-  /** Entries counted per response (0.13.0+). */
+  /** Claude Code entries counted per response (0.13.0+). */
   perResponse: number;
-  /** Entries summed per transcript line (before 0.13.0): tokens ~2x high, transcript gone or not yet refreshed. */
+  /** Claude Code entries summed per transcript line (before 0.13.0): tokens ~2x high. `-f tracker` recounts the ones whose transcript still exists. */
   legacy: number;
+  /** Codex entries: a cumulative snapshot, never per-line inflated, so neither of the above. */
+  codex: number;
   /** Responses whose repeats differed, summed over entries. Expected: partial-then-full output. */
   usageConflicts: number;
   /** Responses where a later repeat fell below an earlier one, summed over entries. Expected 0. */
@@ -1149,15 +1189,17 @@ export interface UsageCountingStats {
 /**
  * Counters for the per-response rule (tracker 8fe868d4, spec R2): a non-zero regression
  * count means Claude Code changed how it repeats usage across a response's lines, so the
- * last-wins rule needs review. `legacy` says how many buffered figures still carry the
- * per-line inflation (Codex entries count as legacy: they carry no marker).
+ * last-wins rule needs review. `legacy` says how many buffered Claude figures still carry the
+ * per-line inflation. Counter fields are summed only when they are finite numbers.
  */
 export function usageCountingStats(entries: readonly BufferEntry[]): UsageCountingStats {
-  const s: UsageCountingStats = { entries: entries.length, perResponse: 0, legacy: 0, usageConflicts: 0, usageRegressions: 0, entriesWithRegressions: 0 };
+  const s: UsageCountingStats = { entries: entries.length, perResponse: 0, legacy: 0, codex: 0, usageConflicts: 0, usageRegressions: 0, entriesWithRegressions: 0 };
   for (const e of entries) {
-    if (e.metrics.tokens.counting === 'per-response') s.perResponse++; else s.legacy++;
-    s.usageConflicts += e.metrics.execution.usage_conflicts ?? 0;
-    const r = e.metrics.execution.usage_regressions ?? 0;
+    if (e.metrics.harness === 'codex') s.codex++;
+    else if (e.metrics.tokens.counting === 'per-response') s.perResponse++;
+    else s.legacy++;
+    s.usageConflicts += num(e.metrics.execution.usage_conflicts);
+    const r = num(e.metrics.execution.usage_regressions);
     s.usageRegressions += r;
     if (r > 0) s.entriesWithRegressions++;
   }

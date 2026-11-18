@@ -88,11 +88,6 @@ export async function extractAgentMetrics(
   return extractMetricsFromFile(location.filePath);
 }
 
-/** Safely coerce a value to a number, returning 0 for non-numeric AND non-finite values */
-function safeNum(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
-}
-
 /** One API response's usage, as four non-negative-or-zero numbers. */
 interface UsageSnap {
   input: number;
@@ -150,22 +145,41 @@ function createAccumulator(): MetricsAccumulator {
  * a requestId that happen to be equal strings apart.
  */
 function responseKey(message: RawAgentMessage, line: number): string {
-  const id = message.message?.id;
+  const id: unknown = message.message?.id;
   if (typeof id === 'string' && id !== '') return `id:${id}`;
+  // Never written by Claude Code; keyed rather than dropped to requestId, where two distinct
+  // numeric ids sharing a requestId would merge (code-auditor, review run #11).
+  if (typeof id === 'number' && Number.isFinite(id)) return `id:${String(id)}`;
   if (typeof message.requestId === 'string' && message.requestId !== '') return `req:${message.requestId}`;
   return `line:${String(line)}`;
 }
 
-function snapOf(usage: NonNullable<NonNullable<RawAgentMessage['message']>['usage']>): UsageSnap {
-  return {
-    input: safeNum(usage.input_tokens),
-    output: safeNum(usage.output_tokens),
-    cacheCreation: safeNum(usage.cache_creation_input_tokens),
-    cacheRead: safeNum(usage.cache_read_input_tokens),
-  };
-}
-
 const SNAP_KEYS = ['input', 'output', 'cacheCreation', 'cacheRead'] as const;
+const USAGE_FIELD: Readonly<Record<(typeof SNAP_KEYS)[number], string>> = {
+  input: 'input_tokens',
+  output: 'output_tokens',
+  cacheCreation: 'cache_creation_input_tokens',
+  cacheRead: 'cache_read_input_tokens',
+};
+
+/**
+ * A line's usage, field by field: a finite number where the line carries one, `undefined`
+ * where it does not (absent, string, NaN, Infinity). Last-wins must never let a malformed or
+ * partial later repeat replace a good earlier value with 0. Under 0.12.1's per-line sum such a
+ * line cost only its own share; under last-wins it would zero the whole response (code-auditor,
+ * review run #11). So a missing field carries the previous value forward, and a `usage` that is
+ * not an object is ignored.
+ */
+function fieldsOf(usage: unknown): Partial<UsageSnap> | null {
+  if (typeof usage !== 'object' || usage === null || Array.isArray(usage)) return null;
+  const u = usage as Record<string, unknown>; // safe: object, non-null, non-array checked above
+  const out: Partial<UsageSnap> = {};
+  for (const k of SNAP_KEYS) {
+    const v = u[USAGE_FIELD[k]];
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
 
 /**
  * Record a line's usage against its response (tracker 8fe868d4; spec R2). The LAST repeat
@@ -177,14 +191,21 @@ const SNAP_KEYS = ['input', 'output', 'cacheCreation', 'cacheRead'] as const;
  * Code changed how it writes usage, and last-wins could undercount). Both are counted so that
  * change shows up as a number.
  */
-function recordUsage(acc: MetricsAccumulator, key: string, usage: NonNullable<RawAgentMessage['message']>['usage']): void {
-  if (!usage) return;
-  const now = snapOf(usage);
+function recordUsage(acc: MetricsAccumulator, key: string, usage: unknown): void {
+  const fields = fieldsOf(usage);
+  if (!fields) return;
   const seen = acc.responses.get(key);
   if (!seen) {
+    const now: UsageSnap = { input: fields.input ?? 0, output: fields.output ?? 0, cacheCreation: fields.cacheCreation ?? 0, cacheRead: fields.cacheRead ?? 0 };
     acc.responses.set(key, { first: now, last: now, high: now, conflicted: false, regressed: false });
     return;
   }
+  const now: UsageSnap = {
+    input: fields.input ?? seen.last.input,
+    output: fields.output ?? seen.last.output,
+    cacheCreation: fields.cacheCreation ?? seen.last.cacheCreation,
+    cacheRead: fields.cacheRead ?? seen.last.cacheRead,
+  };
   const differs = SNAP_KEYS.some(k => now[k] !== seen.first[k]);
   const falls = SNAP_KEYS.some(k => now[k] < seen.high[k]);
   acc.responses.set(key, {

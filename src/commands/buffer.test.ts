@@ -126,9 +126,11 @@ describe('Buffer Commands', () => {
 
       await program.parseAsync(['node', 'test', 'buffer', 'list', '--run', 'run-a', '-f', 'tracker']);
 
-      const parsed = JSON.parse(output.join('\n'));
+      // stdout is what consumers splice; the legacy-count warning goes to stderr (review run #11).
+      const parsed = JSON.parse(harness.stdout.join('\n'));
       assert.strictEqual(parsed.length, 1, 'only the run-a entry should match');
       assert.ok(!('run_id' in parsed[0]), 'tracker output must not carry run_id');
+      assert.ok(harness.stderr.some(l => /counted per transcript line/.test(l)), 'a legacy (unmarked) entry is named on stderr');
     });
 
     it('should reject invalid --since format', async () => {
@@ -195,7 +197,7 @@ describe('Buffer Commands', () => {
 
       await program.parseAsync(['node', 'test', 'buffer', 'session', 'run-id-session', '-f', 'tracker']);
 
-      const parsed = JSON.parse(output.join('\n'));
+      const parsed = JSON.parse(harness.stdout.join('\n'));
       assert.strictEqual(parsed.length, 1);
       assert.ok(!('run_id' in parsed[0]), 'tracker output must not carry run_id');
     });

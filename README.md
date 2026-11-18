@@ -357,10 +357,11 @@ Claude Code writes one transcript line per content block (thinking, text, each `
 From 0.13.0 the Claude extractor folds usage per response:
 
 - **Key:** `message.id`; else the line's `requestId`; else the line itself (counted once, as before).
-- **Last repeat wins.** Repeats that differ differ only in `output_tokens`, which rises from a partial count to the full one, with the last line the maximum (11,101 of 11,101 conflicting responses on 2026-10-30; 4,217 of 4,217 on 2026-11-18). `execution.usage_conflicts` counts those responses. `execution.usage_regressions` counts responses where a later repeat was *lower* than an earlier one in any component. None has been observed. A non-zero value means Claude Code changed how it writes usage and the rule needs review; `agent-metrics status` prints it.
+- **Last repeat wins.** Repeats that differ differ only in `output_tokens`, which rises from a partial count to the full one, with the last line the maximum (11,101 of 11,101 conflicting responses on 2026-10-30; 4,217 of 4,217 on 2026-11-18). That is measured on Claude Code 2.1.280–2.1.316 only. The rule is applied to every version, and the counters below are the tripwire for a later one that behaves differently. `execution.usage_conflicts` counts those responses. `execution.usage_regressions` counts responses where a later repeat was *lower* than an earlier one in any component. None has been observed. A non-zero value means Claude Code changed how it writes usage and the rule needs review. `buffer list -f tracker` / `buffer session -f tracker` print a warning on stderr for it, and `agent-metrics status` counts it.
+- **A malformed or partial repeat never erases a good one.** A repeat's field that is missing or not a finite number keeps the value from the response's earlier lines, and a `usage` that is not an object is ignored. Under last-wins, a bad final line would otherwise zero the whole response.
 - **Not deduplicated:** tool counts, tool breakdown, error count, model and timestamps. Each block appears on exactly one line.
 - **`execution.message_count`** is distinct assistant responses plus user and `tool_result` lines. `execution.line_count` is the raw line count (what `message_count` meant before 0.13.0).
-- **`tokens.counting: "per-response"`** marks figures counted this way. An entry without it was counted per line. Buffer entries are re-extracted from their transcript by `buffer list -f tracker` / `buffer session -f tracker` while the transcript exists. An entry whose transcript is gone keeps its old figures, because nothing remains to recount it from. The marker is not sent in `-f tracker` output: the tracker's `agents[]` schema is strict, so tracker rows saved before and after the upgrade cannot be told apart row by row.
+- **`tokens.counting: "per-response"`** marks figures counted this way. A Claude Code entry without it was counted per line. (Codex entries never carry it and were never inflated.) Buffer entries are re-extracted from their transcript by `buffer list -f tracker` / `buffer session -f tracker` while the transcript exists. An entry whose transcript is gone keeps its old figures, because nothing remains to recount it from. Those two commands name every such entry on stderr, and they also warn when a re-extraction fails and falls back to the stored capture. **Only `-f tracker` re-extracts**: `-f json`, the table views and `report` show the stored capture, so a legacy entry can read about 2× higher there than in the tracker output. The marker is not sent in `-f tracker` output: the tracker's `agents[]` schema is strict, so tracker rows saved before and after the upgrade cannot be told apart row by row.
 
 Codex extraction is unaffected: it reads the session's cumulative usage snapshot and never sums lines.
 
@@ -479,7 +480,9 @@ import {
   trackerDefinitionVersion,       // the definition_version -f tracker emits for an entry, or undefined (v0.12.0)
   TRACKER_DEFINITION_VERSION_MAX, // save_run's length limit for definition_version (50)
   definitionCaptureStats,         // definition-capture counters behind `agent-metrics status` (v0.12.0)
-  usageCountingStats,             // per-response vs legacy entries, usage conflicts/regressions (v0.13.0)
+  usageCountingStats,             // per-response / legacy Claude / Codex entries, usage conflicts/regressions (v0.13.0)
+  trackerSpliceWarnings,          // the stderr warnings -f tracker prints for legacy and regressed entries (v0.13.0)
+  isLegacyClaudeCount,            // true for a Claude Code entry counted per line (before 0.13.0)
   LockAcquisitionError, // thrown by the four rewrite ops under lock contention
 } from '@uluops/agent-metrics';
 
