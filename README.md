@@ -1,5 +1,7 @@
 **[UluOps](https://uluops.ai)** · The operations layer for agentic work
 
+UluOps turns agent runs into tracked findings — scored, fingerprinted, and carried forward until they're resolved.
+
 ---
 
 # Agent Metrics
